@@ -1,0 +1,6 @@
+gomoku/models/*
+gomoku/__pycache__/*
+gomoku/runs/*
+
+
+*.egg-info
