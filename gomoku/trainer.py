@@ -56,11 +56,11 @@ def self_play(policy):
 # %%
 
 board_size = 9
-lr = 1e-4
-steps = 500
+lr = 2e-3
+steps = 3000
 save_per_steps = 100
-lab_name = 'gomoku_zero'
-batch_size = 128
+lab_name = 'gomoku_zero_lr'
+batch_size = 256
 device = 'cpu'
 
 
