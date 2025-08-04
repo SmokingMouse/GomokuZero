@@ -13,10 +13,10 @@ import tqdm
 import numpy as np
 
 # %% 
-def self_play(policy):
+def self_play(policy, device, itermax=800):
     game = GomokuEnvSimple()
-    player1 = ZeroMCTSPlayer(game, policy, itermax=800)
-    player2 = ZeroMCTSPlayer(game, policy, itermax=800)
+    player1 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
+    player2 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
 
     states = []
     probs = []
@@ -59,27 +59,36 @@ board_size = 9
 lr = 2e-3
 steps = 3000
 save_per_steps = 100
-lab_name = 'gomoku_zero_lr'
+lab_name = 'gomoku_zero_gpu_samples'
 batch_size = 256
-device = 'cpu'
+self_play_num = 30
+self_play_per_steps = 50
+buffer_size = 4000
+device = 'cuda'
 
 
 def train(policy, optimizor, replay_buffer):
     writer = SummaryWriter(f'runs/{lab_name}')
 
     for step in tqdm.tqdm(range(steps)):
-        with torch.no_grad():
-            records = self_play(policy)
-            for i in range(len(records['states'])):
-                replay_buffer.append((
-                    records['states'][i],
-                    records['probs'][i],
-                    records['rewards'][i]
-                ))
-        
-        if len(replay_buffer) < batch_size:
-            continue
+        policy.train()
 
+        if step % self_play_per_steps == 0:
+            with torch.no_grad():
+                policy.eval()
+                for i in range(self_play_num):
+                    records = self_play(policy, device)
+                    for i in range(len(records['states'])):
+                        replay_buffer.append((
+                            records['states'][i],
+                            records['probs'][i],
+                            records['rewards'][i]
+                        ))
+            rich.print(f'Self play {self_play_num} times')
+        
+        # if len(replay_buffer) < batch_size:
+            # continue
+        policy.train()
         batch = random.sample(replay_buffer, batch_size)
 
         states, probs, rewards = zip(*batch)
@@ -96,8 +105,10 @@ def train(policy, optimizor, replay_buffer):
         logits, value = policy(states)
         # batch_size = len(records['states'])
         
-        mse = F.mse_loss(value.squeeze(), rewards, reduce='sum')  / batch_size
-        cse = -torch.sum(probs * F.log_softmax(logits, dim=-1)) / batch_size
+        mse = F.mse_loss(value.squeeze(), rewards, reduce='mean')  
+        # cse = -torch.sum(probs * F.log_softmax(logits, dim=-1)) / batch_size
+        log_probs = F.log_softmax(logits, dim=-1)
+        cse = -torch.sum(probs * log_probs, dim=1).mean() # 先在每个样本上求和，再在batch上求平均
 
         loss = (mse + cse) #/ batch_size
         loss.backward()
@@ -122,9 +133,9 @@ if __name__ == "__main__":
     if os.path.exists(f'models/{lab_name}') is False:
         os.makedirs(f'models/{lab_name}')
     
-    buffer = deque(maxlen=20000)
+    buffer = deque(maxlen=buffer_size)
 
-    policy = ZeroPolicy(board_size=board_size, device=device)
+    policy = ZeroPolicy(board_size=board_size).to(device)
     optimizor = torch.optim.Adam(policy.parameters(), lr=lr, weight_decay=1e-4)
     # Create directory if not exists
     train(policy, optimizor, buffer)

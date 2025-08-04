@@ -40,15 +40,18 @@ class MCTSPlayer(Player):
         return action
 
 class ZeroMCTSPlayer(Player):
-    def __init__(self, game: GomokuEnv, policy: ZeroPolicy, itermax=2000):
+    def __init__(self, game: GomokuEnv, policy: ZeroPolicy, itermax=2000, device='cpu'):
         super().__init__("ZeroMCTS Player")
         self.game = game
         self.itermax = itermax
         self.policy = policy
+        self.device = device
 
     def play(self):
         # Implement MCTS logic here
-        mcts = ZeroMCTS(self.game, self.policy) 
+        current_state = self.game._get_observation()# 关键，不能是执行动作后的状态
+
+        mcts = ZeroMCTS(self.game, self.policy, device=self.device) 
         mcts.run(self.itermax)
 
         num_moves = self.game.move_size # 你需要一个方法来获取当前是第几步
@@ -60,14 +63,14 @@ class ZeroMCTSPlayer(Player):
         self.game.step(action)
 
         # probs = mcts.root.
-        probs = [] 
-        for i in range(self.game.board_size ** 2):
-            child_visits = mcts.root.children[i].visits if i in mcts.root.children else 0
-            probs.append(child_visits / mcts.root.visits if mcts.root.visits > 0 else 0)
+        # probs = [] 
+        # for i in range(self.game.board_size ** 2):
+        #     child_visits = mcts.root.children[i].visits if i in mcts.root.children else 0
+        #     probs.append(child_visits / mcts.root.visits if mcts.root.visits > 0 else 0)
         return {
             'action': action, 
-            'probs': probs, 
-            'state': self.game._get_observation()
+            'probs': probs_for_training, 
+            'state': current_state
         }
 
 class RandomPlayer(Player):
@@ -76,7 +79,7 @@ class RandomPlayer(Player):
         self.game = game
 
     def play(self):
-        valid_actions = self.game.get_valid_actions()
+        valid_actions = self.game.get_valid_actions() 
         if not valid_actions:
             return None
         action = random.choice(valid_actions)
@@ -89,10 +92,10 @@ if __name__ == "__main__":
 
     board_size = 9
     game = GomokuEnv(board_size=board_size)
-    policy = ZeroPolicy(board_size, device='cpu')
-    policy.load_state_dict(torch.load('models/gomoku_zero_lr/policy_step_400.pth'))
+    policy = ZeroPolicy(board_size)
+    policy.load_state_dict(torch.load('models/gomoku_zero_gpu_samples/policy_step_800.pth'))
     player1 = ZeroMCTSPlayer(game, policy, itermax=800)
-    player2 = MCTSPlayer(game, itermax=1000)
+    player2 = MCTSPlayer(game, itermax=200)
 
     while not game._is_terminal():
         # print(game)
