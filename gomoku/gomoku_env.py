@@ -37,6 +37,7 @@ class GomokuEnv(gym.Env):
         self.enable_history = enable_history
         self.move_history = []
         self.last_action = -1
+        self.move_size = 0
         
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Reset the environment to initial state."""
@@ -64,6 +65,7 @@ class GomokuEnv(gym.Env):
         
         # Make the move
         self.board[row, col] = self.current_player
+        self.move_size += 1
         self.move_history.append((row, col)) if self.enable_history else None
         self.last_action = action
         

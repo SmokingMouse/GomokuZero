@@ -6,6 +6,7 @@ import torch
 import random
 import math
 from abc import ABC, abstractmethod
+import numpy as np
 
 class Strategy(ABC):
     def __init__(self):
@@ -275,6 +276,36 @@ class ZeroMCTS:
         if not root.children:
             return random.choice(root.env.get_valid_actions())
         return max(root.children.items(), key=lambda item: item[1].visits)[0]
+    
+    def select_action_with_temperature(self, temperature=1.0):
+        if not self.root.children:
+            # 如果没有子节点，随机选一个（虽然不太可能发生）
+            return random.choice(self.root.env.get_valid_actions()), {}
+    
+        visit_counts = np.array([child.visits for child in self.root.children.values()])
+        actions = list(self.root.children.keys())
+    
+        if temperature == 0:
+            # 零温度等同于取最大值
+            action_index = np.argmax(visit_counts)
+            chosen_action = actions[action_index]
+        else:
+            # 根据温度调整概率分布
+            visit_probs = visit_counts**(1 / temperature)
+            visit_probs /= np.sum(visit_probs) # 归一化
+            
+            # 从分布中采样
+            action_index = np.random.choice(len(actions), p=visit_probs)
+            chosen_action = actions[action_index]
+            
+        # 同时，我们需要为训练准备 π (pi) 向量
+        # π 是不加温度的、归一化的访问次数，代表了MCTS的“思考结果”
+        pi_distribution = {a: node.visits for a, node in self.root.children.items()}
+        total_visits = sum(pi_distribution.values())
+        probs_for_training = [pi_distribution.get(i, 0) / total_visits for i in range(self.root.env.board_size**2)]
+    
+        return chosen_action, probs_for_training
+
     
     def _puct_value(self, child: TreeNode, action_prob=1.0):
         """Calculate PUCT value using the policy network"""

@@ -1,10 +1,10 @@
 
 # %% 
-from pydoc import visiblename
 from gomoku.mcts import MCTS, ZeroMCTS
 from gomoku.gomoku_env import GomokuEnv
 from gomoku.policy import ZeroPolicy
 import random
+import torch
 # %%
 
 class Player:
@@ -49,7 +49,14 @@ class ZeroMCTSPlayer(Player):
     def play(self):
         # Implement MCTS logic here
         mcts = ZeroMCTS(self.game, self.policy) 
-        action = mcts.run(self.itermax)
+        mcts.run(self.itermax)
+
+        num_moves = self.game.move_size # 你需要一个方法来获取当前是第几步
+        temperature = 1.0 if num_moves < 30 else 0.0
+
+        # 使用带温度的采样来选择最终动作
+        action, probs_for_training = mcts.select_action_with_temperature(temperature)
+
         self.game.step(action)
 
         # probs = mcts.root.
@@ -82,21 +89,22 @@ if __name__ == "__main__":
 
     board_size = 9
     game = GomokuEnv(board_size=board_size)
-    policy = ZeroPolicy(board_size)
-    player1 = ZeroMCTSPlayer(game, policy, itermax=8000)
-    player2 = ZeroMCTSPlayer(game, policy, itermax=2000)
+    policy = ZeroPolicy(board_size, device='cpu')
+    policy.load_state_dict(torch.load('models/gomoku_zero_lr/policy_step_400.pth'))
+    player1 = ZeroMCTSPlayer(game, policy, itermax=800)
+    player2 = MCTSPlayer(game, itermax=1000)
 
     while not game._is_terminal():
         # print(game)
         game.render()
         action1 = player1.play()
-        print(f"{player1.name} played: {action1}")
+        # print(f"{player1.name} played: {action1}")
         
         if game._is_terminal():
             break
         
         action2 = player2.play()
-        print(f"{player2.name} played: {action2}")
+        # print(f"{player2.name} played: {action2}")
 
     game.render()
     print("Game Over!")
