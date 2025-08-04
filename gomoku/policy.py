@@ -4,28 +4,27 @@ import torch
 import torch.nn.functional as F
 
 class ZeroPolicy(nn.Module):
-    def __init__(self, board_size, device='cpu'):
+    def __init__(self, board_size):
         super(ZeroPolicy, self).__init__()
         self.board_size = board_size
         self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action
-        self.device = device
         
         # Shared trunk - simple conv layers as in AlphaZero
-        self.conv1 = nn.Conv2d(self.channel_size, 32, kernel_size=3, padding=1, device=self.device)
-        self.bn1 = nn.BatchNorm2d(32, device=self.device)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1, device=self.device)
-        self.bn2 = nn.BatchNorm2d(64, device=self.device)
+        self.conv1 = nn.Conv2d(self.channel_size, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
         
         # Policy head
-        self.policy_conv = nn.Conv2d(64, 2, kernel_size=1, device=self.device)
-        self.policy_bn = nn.BatchNorm2d(2, device=self.device)
-        self.policy_fc = nn.Linear(2 * board_size * board_size, board_size * board_size, device=self.device)
+        self.policy_conv = nn.Conv2d(64, 2, kernel_size=1)
+        self.policy_bn = nn.BatchNorm2d(2)
+        self.policy_fc = nn.Linear(2 * board_size * board_size, board_size * board_size)
         
         # Value head
-        self.value_conv = nn.Conv2d(64, 1, kernel_size=1, device=self.device)
-        self.value_bn = nn.BatchNorm2d(1, device=self.device)
-        self.value_fc1 = nn.Linear(board_size * board_size, 64, device=self.device)
-        self.value_fc2 = nn.Linear(64, 1, device=self.device)
+        self.value_conv = nn.Conv2d(64, 1, kernel_size=1)
+        self.value_bn = nn.BatchNorm2d(1)
+        self.value_fc1 = nn.Linear(board_size * board_size, 64)
+        self.value_fc2 = nn.Linear(64, 1)
 
     def forward(self, x: torch.Tensor):
         # Input: (batch_size, channel_size * board_size * board_size)

@@ -159,12 +159,13 @@ class MCTS:
 
 
 class ZeroMCTS:
-    def __init__(self, env: GomokuEnv, policy: ZeroPolicy, puct=5):
+    def __init__(self, env: GomokuEnv, policy: ZeroPolicy, puct=5, device='cpu'):
         # Policy is evaluation network.
         self.env = env
         self.policy = policy
         self.puct = puct 
         self.root = TreeNode(env.clone())
+        self.device = device
     
     def run(self, iterations):
         """Run MCTS with PUCT using the policy network"""
@@ -188,6 +189,7 @@ class ZeroMCTS:
                 torch_x = torch.from_numpy(obs).unsqueeze(0).float()
                 valid_actions_tensor = torch.tensor(current.env.get_valid_actions())
                 
+                torch_x = torch_x.to(device=self.device)
                 with torch.no_grad():
                     policy_logits, value = self.policy(torch_x)
                     
@@ -219,12 +221,11 @@ class ZeroMCTS:
             
         if node.action_prob is None:
             obs = node.env._get_observation()
-            torch_x = torch.from_numpy(obs).unsqueeze(0).float()
+            torch_x = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
             valid_actions_tensor = torch.tensor(node.env.get_valid_actions())
             
             # Get policy and value from network
             with torch.no_grad():
-                torch_x = torch_x.to(device=self.policy.device)
                 policy_logits, value = self.policy(torch_x)
                 
             # Mask invalid actions
@@ -252,10 +253,9 @@ class ZeroMCTS:
             return (node.env.winner, 1)
             
         obs = node.env._get_observation()
-        torch_x = torch.from_numpy(obs).unsqueeze(0).float()
+        torch_x = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
         
         with torch.no_grad():
-            torch_x = torch_x.to(device=self.policy.device)
             policy_logits, value = self.policy(torch_x)
             
         # Return the value as the simulation result
