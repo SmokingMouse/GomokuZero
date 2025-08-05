@@ -1,9 +1,8 @@
 # %%
 import os
 from collections import deque
+from gomoku.worker import gather_selfplay_games
 import random
-from gomoku.gomoku_env import  GomokuEnvSimple
-from gomoku.player import  ZeroMCTSPlayer
 from gomoku.policy import ZeroPolicy
 from torch.utils.tensorboard import SummaryWriter
 import torch
@@ -11,64 +10,27 @@ import torch.nn.functional as F
 import rich
 import tqdm
 import numpy as np
-
-# %% 
-def self_play(policy, device, itermax=800):
-    game = GomokuEnvSimple()
-    player1 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
-    player2 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
-
-    states = []
-    probs = []
-    rewards = []
-
-    while not game._is_terminal():
-        infos = player1.play()
-        states.append(infos['state'])
-        probs.append(infos['probs'])
-
-        if game._is_terminal():
-            break
-        infos = player2.play()
-        states.append(infos['state'])
-        probs.append(infos['probs'])
-
-    winner = game.winner
-    for i in range(len(states)):
-        current_player = i % 2 + 1
-
-        if current_player == winner:
-            rewards.append(1)
-        elif winner == 0:
-            rewards.append(0)
-        else:
-            rewards.append(-1)
-    
-    print(f"Game over! Winner: {winner}")
-    game.render()
-
-    return {
-        'states': states,
-        'probs': probs,
-        'rewards': rewards,
-    }
-    
-# %%
+import ray
 
 board_size = 9
-lr = 2e-3
-steps = 3000
-save_per_steps = 100
-lab_name = 'gomoku_zero_gpu_samples'
+lr = 1e-3
+steps = 15000
+save_per_steps = 200
+lab_name = 'gomoku_zero_ray_dirichlet_800'
 batch_size = 256
-self_play_num = 30
-self_play_per_steps = 50
-buffer_size = 4000
+buffer_size = 20000
 device = 'cuda'
+cpus = os.cpu_count() // 2
+self_play_per_steps = 50
+self_play_num = 60
+games_per_worker = self_play_num // cpus
+num_workers = cpus
+itermax=800
 
 
 def train(policy, optimizor, replay_buffer):
     writer = SummaryWriter(f'runs/{lab_name}')
+    ray.init(num_cpus=cpus)
 
     for step in tqdm.tqdm(range(steps)):
         policy.train()
@@ -76,14 +38,17 @@ def train(policy, optimizor, replay_buffer):
         if step % self_play_per_steps == 0:
             with torch.no_grad():
                 policy.eval()
-                for i in range(self_play_num):
-                    records = self_play(policy, device)
-                    for i in range(len(records['states'])):
+
+                games = gather_selfplay_games(policy, 'cpu', itermax=itermax, games_per_worker=games_per_worker, num_workers=cpus)
+
+                for game in games:
+                    for i in range(len(game['states'])):
                         replay_buffer.append((
-                            records['states'][i],
-                            records['probs'][i],
-                            records['rewards'][i]
+                            game['states'][i],
+                            game['probs'][i],
+                            game['rewards'][i]
                         ))
+
             rich.print(f'Self play {self_play_num} times')
         
         # if len(replay_buffer) < batch_size:

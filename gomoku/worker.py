@@ -1,112 +1,59 @@
 
 #%%
 
-from gomoku.trainer import self_play
+from email import policy
+from gomoku.player import self_play
 from gomoku.policy import ZeroPolicy
-from collections import deque
-import rich
+import ray
 
-import multiprocessing as mp
-import os
+# 1. 初始化 Ray
+@ray.remote
+class SelfPlayWorker:
+    def __init__(self, board_size, device):
+        self.policy = ZeroPolicy(board_size=board_size).to(device)
+        self.device = device
+        self.board_size = board_size
+        print(f"Worker actor initialized on {self.device}")
 
+    def set_weights(self, weights):
+        self.policy.load_state_dict(weights)
+        self.policy.eval()
 
-def self_play_worker(
-    worker_id,
-    model_state_dict, # 接收模型权重
-    data_queue,       # 用于发送数据的队列
-    games_to_play,    # 这个worker需要玩多少局
-    board_size,
-    itermax,
-    device            # 每个worker可以指定自己的device（比如分配不同GPU）
-):
-    try:  # 捕获所有异常
-        policy = ZeroPolicy(board_size=board_size).to(device)
-        policy.load_state_dict(model_state_dict)
-        policy.eval()
-
-        for i in range(games_to_play):
-            records = self_play(policy, device, itermax)
-            data_queue.put(records)
-            rich.print(f"Worker {worker_id} finished game {i}")
-    except Exception as e:
-        rich.print(f"Worker {worker_id} error: {e}")
-    finally:  # 无论成功失败，都发送'DONE'
-        data_queue.put('DONE')
+    def play_game(self, itermax):
+        return self_play(self.policy, self.device, itermax)
     
-    rich.print(f'Worker {worker_id} finished {games_to_play} games')
-
-
-# %%
-total_games = 10
-iter_max = 10
-board_size = 9
-buffer = deque(maxlen=total_games)
-device = 'cpu'
-
-
-if __name__ == '__main__':
-    import time
-    begin = time.time()
-    mp.set_start_method('spawn', force=True)
-
-    # 定义多进程参数
-    # num_workers = os.cpu_count() - 1  
-    num_workers = 6
-
-    if num_workers <= 0: 
-        num_workers = 1
-    print(f"Using {num_workers} worker processes for self-play.")
-
-    policy = ZeroPolicy(board_size=board_size).to(device)
-
-    # === 1. 并行生成数据阶段 ===
+def gather_selfplay_games(policy, device, board_size=9, itermax=800, num_workers=6, games_per_worker=5):
+    """
+    在单个 worker 上进行 self-play，返回游戏数据。
+    """
     policy.eval()
 
-    cpu_model_state_dict = {k: v.cpu() for k, v in policy.state_dict().items()}
+    weights_ref = ray.put({k: v.cpu() for k, v in policy.state_dict().items()})
 
-    # 创建数据队列
-    data_queue = mp.Queue()
+    workers = [SelfPlayWorker.remote(board_size, device) for _ in range(num_workers)]
+    set_weights_tasks = [worker.set_weights.remote(weights_ref) for worker in workers]
+    ray.get(set_weights_tasks) # 等待权重设置完成
+    game_futures = [worker.play_game.remote(itermax) for _ in range(games_per_worker) for worker in workers] # 简化版任务分配
+    games = ray.get(game_futures)
+    return games
 
-    # 计算每个worker需要玩多少局游戏
-    games_per_worker = total_games // num_workers
-    remaining_games = total_games % num_workers
+# 2. 主进程逻辑
+if __name__ == '__main__':
+    total_games = 9
+    iter_max = 40
+    board_size = 9
+    device = 'cpu'
+    num_workers = 6
 
-    processes = []
-    for i in range(num_workers):
-        games_for_this_worker = games_per_worker + (1 if i < remaining_games else 0)
-        if games_for_this_worker == 0: 
-            continue
+    ray.init(num_cpus=6)
+    policy = ZeroPolicy(board_size=board_size).to(device)
+    games = gather_selfplay_games(policy, device, itermax=iter_max)
+    ray.shutdown()
 
-        worker_device = device 
+    for game in games:
+        print(f"Game states: {game['rewards'][0]}")
 
-        p = mp.Process(
-            target=self_play_worker,
-            args=(
-                i,
-                cpu_model_state_dict,
-                data_queue,
-                games_for_this_worker,
-                board_size, # 你的全局参数
-                iter_max,    # 你的全局参数
-                worker_device
-            )
-        )
-        p.start()
-        processes.append(p)
+    print(f"Generated {len(games)} games.")
 
-    games = []
-
-    done_workers = 0
-
-    while done_workers < num_workers:
-        game = data_queue.get()
-        if game == 'DONE':
-            done_workers += 1
-            continue
-        games.append(game)
-
-    for p in processes:
-        p.join()
-
-    print(time.time()-begin)
 # %%
+

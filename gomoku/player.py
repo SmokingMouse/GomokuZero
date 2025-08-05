@@ -1,7 +1,7 @@
 
 # %% 
 from gomoku.mcts import MCTS, ZeroMCTS
-from gomoku.gomoku_env import GomokuEnv
+from gomoku.gomoku_env import GomokuEnv, GomokuEnvSimple
 from gomoku.policy import ZeroPolicy
 import random
 import torch
@@ -40,22 +40,30 @@ class MCTSPlayer(Player):
         return action
 
 class ZeroMCTSPlayer(Player):
-    def __init__(self, game: GomokuEnv, policy: ZeroPolicy, itermax=2000, device='cpu'):
+    def __init__(self, game: GomokuEnv, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
         super().__init__("ZeroMCTS Player")
         self.game = game
         self.itermax = itermax
         self.policy = policy
         self.device = device
+        self.eager = eager
 
     def play(self):
         # Implement MCTS logic here
         current_state = self.game._get_observation()# 关键，不能是执行动作后的状态
 
-        mcts = ZeroMCTS(self.game, self.policy, device=self.device) 
+        if self.eager:
+            mcts = ZeroMCTS(self.game, self.policy, device=self.device, dirichlet_alpha=0) 
+        else:
+            mcts = ZeroMCTS(self.game, self.policy, device=self.device) 
+
         mcts.run(self.itermax)
 
         num_moves = self.game.move_size # 你需要一个方法来获取当前是第几步
-        temperature = 1.0 if num_moves < 30 else 0.0
+        if self.eager:
+            temperature = 0.0
+        else:
+            temperature = 1.0 if num_moves < 30 else 0.0
 
         # 使用带温度的采样来选择最终动作
         action, probs_for_training = mcts.select_action_with_temperature(temperature)
@@ -87,15 +95,58 @@ class RandomPlayer(Player):
 
         return action
 
+def self_play(policy, device, itermax=800):
+    game = GomokuEnvSimple()
+    player1 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
+    player2 = ZeroMCTSPlayer(game, policy, itermax=itermax, device=device)
+
+    states = []
+    probs = []
+    rewards = []
+
+    while not game._is_terminal():
+        infos = player1.play()
+        states.append(infos['state'])
+        probs.append(infos['probs'])
+
+        if game._is_terminal():
+            break
+        infos = player2.play()
+        states.append(infos['state'])
+        probs.append(infos['probs'])
+
+    winner = game.winner
+    for i in range(len(states)):
+        current_player = i % 2 + 1
+
+        if current_player == winner:
+            rewards.append(1)
+        elif winner == 0:
+            rewards.append(0)
+        else:
+            rewards.append(-1)
+    
+    print(f"Game over! Winner: {winner}")
+    # game.render()
+
+    return {
+        'states': states,
+        'probs': probs,
+        'rewards': rewards,
+    }
+
 # %%
 if __name__ == "__main__":
 
     board_size = 9
     game = GomokuEnv(board_size=board_size)
     policy = ZeroPolicy(board_size)
-    policy.load_state_dict(torch.load('models/gomoku_zero_gpu_samples/policy_step_800.pth'))
-    player1 = ZeroMCTSPlayer(game, policy, itermax=800)
-    player2 = MCTSPlayer(game, itermax=200)
+    policy.load_state_dict(torch.load('models/gomoku_zero_ray_dirichlet/policy_step_8400.pth'))
+    policy2 = ZeroPolicy(board_size)
+    policy2.load_state_dict(torch.load('models/gomoku_zero_ray_dirichlet_800/policy_step_2600.pth'))
+    player1 = ZeroMCTSPlayer(game, policy, itermax=400, eager=True)
+    # player2 = ZeroMCTSPlayer(game, policy, itermax=1600, eager=True)
+    player2 = MCTSPlayer(game, itermax=8000)
 
     while not game._is_terminal():
         # print(game)
