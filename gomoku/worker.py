@@ -1,7 +1,6 @@
 
 #%%
 
-from email import policy
 from gomoku.player import self_play
 from gomoku.policy import ZeroPolicy
 import ray

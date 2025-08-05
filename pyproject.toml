@@ -13,4 +13,5 @@ dependencies = [
     "tqdm>=4.67.1",
     "tensorboard>=2.20.0",
     "ray>=2.48.0",
+    "scikit-learn>=1.7.1",
 ]

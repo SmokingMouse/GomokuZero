@@ -3,8 +3,27 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += residual
+        out = F.relu(out)
+        return out
+
 class ZeroPolicy(nn.Module):
-    def __init__(self, board_size):
+    def __init__(self, board_size, num_blocks = 2):
         super(ZeroPolicy, self).__init__()
         self.board_size = board_size
         self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action
@@ -14,6 +33,11 @@ class ZeroPolicy(nn.Module):
         self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
+
+        # Residual blocks
+        self.res_blocks = nn.ModuleList([
+            ResBlock(64, 64) for _ in range(num_blocks)
+        ])
         
         # Policy head
         self.policy_conv = nn.Conv2d(64, 2, kernel_size=1)
@@ -41,6 +65,10 @@ class ZeroPolicy(nn.Module):
         x = self.conv2(x)
         x = self.bn2(x)
         x = F.relu(x)
+
+        # Residual blocks
+        for res_block in self.res_blocks:
+            x = res_block(x)
         
         # Policy head
         policy = self.policy_conv(x)
