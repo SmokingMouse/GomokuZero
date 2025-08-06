@@ -1,12 +1,12 @@
 
 # %% 
 from email.policy import Policy
-from gomoku.mcts import MCTS, ZeroMCTS
+from tkinter import NO
+from gomoku.mcts import MCTS, WrongZeroMCTS
+from gomoku.zero_mcts import ZeroMCTS
 from gomoku.gomoku_env import GomokuEnv, GomokuEnvSimple
 from gomoku.policy import ZeroPolicy
 from gomoku.utils import timer
-import concurrent.futures
-import tqdm
 import argparse
 import random
 import torch
@@ -38,7 +38,7 @@ class MCTSPlayer(Player):
         # self.game = game
         self.itermax = itermax
 
-    def play(self, game):
+    def play(self, game, *args, **kwargs):
         # Implement MCTS logic here
         mcts = MCTS(game) 
         action = mcts.run(self.itermax)
@@ -50,15 +50,16 @@ class MCTSPlayer(Player):
             'state': []
         }
 
-class ZeroMCTSPlayer(Player):
+class IneffectiveZeroMCTSPlayer(Player):
     def __init__(self, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
-        super().__init__("ZeroMCTS Player")
+        super().__init__("Ineffective ZeroMCTS Player")
         self.itermax = itermax
         self.policy = policy
         self.device = device
         self.eager = eager
 
-    def play(self, game):
+    # @timer
+    def play(self, game, *args, **kwargs):
         self.policy.eval()
         # Implement MCTS logic here
         current_state = game._get_observation()# 关键，不能是执行动作后的状态
@@ -81,11 +82,85 @@ class ZeroMCTSPlayer(Player):
 
         game.step(action)
 
-        # probs = mcts.root.
-        # probs = [] 
-        # for i in range(self.game.board_size ** 2):
-        #     child_visits = mcts.root.children[i].visits if i in mcts.root.children else 0
-        #     probs.append(child_visits / mcts.root.visits if mcts.root.visits > 0 else 0)
+        return {
+            'action': action, 
+            'probs': probs_for_training, 
+            'state': current_state
+        }
+
+class WrongZeroMCTSPlayer(Player):
+    def __init__(self, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
+        super().__init__("Wrong ZeroMCTS Player")
+        self.itermax = itermax
+        self.policy = policy
+        self.device = device
+        self.eager = eager
+
+    # @timer
+    def play(self, game, *args, **kwargs):
+        self.policy.eval()
+        # Implement MCTS logic here
+        current_state = game._get_observation()# 关键，不能是执行动作后的状态
+
+        if self.eager:
+            mcts = WrongZeroMCTS(game, self.policy, device=self.device, dirichlet_alpha=0) 
+        else:
+            mcts = WrongZeroMCTS(game, self.policy, device=self.device) 
+
+        mcts.run(self.itermax)
+
+        num_moves = game.move_size # 你需要一个方法来获取当前是第几步
+        if self.eager:
+            temperature = 0.0
+        else:
+            temperature = 1.0 if num_moves < 10 else 0.0
+
+        # 使用带温度的采样来选择最终动作
+        action, probs_for_training = mcts.select_action_with_temperature(temperature)
+
+        game.step(action)
+
+        return {
+            'action': action, 
+            'probs': probs_for_training, 
+            'state': current_state
+        }
+
+class ZeroMCTSPlayer(Player):
+    def __init__(self, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
+        super().__init__("ZeroMCTS Player")
+        self.itermax = itermax
+        self.policy = policy
+        self.device = device
+        self.eager = eager
+
+    # @timer
+    def play(self, game, *args, **kwargs):
+        self.policy.eval()
+        # Implement MCTS logic here
+        current_state = game._get_observation()# 关键，不能是执行动作后的状态
+
+        mcts = kwargs.get('mcts', None)
+
+        if mcts is None:
+            if self.eager:
+                mcts = ZeroMCTS(game, self.policy, device=self.device, dirichlet_alpha=0) 
+            else:
+                mcts = ZeroMCTS(game, self.policy, device=self.device) 
+
+        mcts.run(self.itermax)
+
+        num_moves = game.move_size # 你需要一个方法来获取当前是第几步
+        if self.eager:
+            temperature = 0.0
+        else:
+            temperature = 1.0 if num_moves < 10 else 0.0
+
+        # 使用带温度的采样来选择最终动作
+        action, probs_for_training = mcts.select_action_with_temperature(temperature)
+
+        game.step(action)
+
         return {
             'action': action, 
             'probs': probs_for_training, 
@@ -115,7 +190,9 @@ def self_play(policy, device, itermax=800):
     print(f"Game over! Winner: {winner}")
     return infos
 
-def play_one_game(player1, player2, game: GomokuEnvSimple = None):
+@timer
+def play_one_game(player1, player2, game: GomokuEnvSimple = None,
+                  render=False):
     states = []
     probs = []
     rewards = []
@@ -124,19 +201,43 @@ def play_one_game(player1, player2, game: GomokuEnvSimple = None):
         env = GomokuEnvSimple()
     else:
         env = game
+    
+    mcts1, mcts2 = None, None
+
+    is_player1_zero_mcts = isinstance(player1, ZeroMCTSPlayer)
+    is_player2_zero_mcts = isinstance(player2, ZeroMCTSPlayer)
+
+    if is_player1_zero_mcts:
+        mcts1 = ZeroMCTS(env, player1.policy)
+    
+    if is_player2_zero_mcts:
+        mcts2 = ZeroMCTS(env, player2.policy)
 
     while not env._is_terminal():
-        infos = player1.play(env)
+        infos = player1.play(env, mcts=mcts1) 
         states.append(infos['state'])
         probs.append(infos['probs'])
 
-        # env.render()
+        if is_player1_zero_mcts:
+            mcts1.update_root(infos['action'])
+        if is_player2_zero_mcts:
+            mcts2.update_root(infos['action'])
+
+        if render:
+            env.render()
         if env._is_terminal():
             break
-        infos = player2.play(env)
+        infos = player2.play(env, mcts=mcts2)
         states.append(infos['state'])
         probs.append(infos['probs'])
-        # env.render()
+
+        if is_player1_zero_mcts:
+            mcts1.update_root(infos['action'])
+        if is_player2_zero_mcts:
+            mcts2.update_root(infos['action'])
+
+        if render:
+            env.render()
 
     winner = env.winner
     for i in range(len(states)):
@@ -258,11 +359,12 @@ def arena_parallel(player1_main, player2_main, games=100, num_cpus=None):
         'draw_rate': draw_rate,
     }
 # %%
-game = GomokuEnvSimple()
-policy = ZeroPolicy(board_size=9)
-policy.load_state_dict(torch.load('models/gomoku_zero_multisteplr/policy_step_15000.pth'))
-infos = self_play(policy, 'cpu', 200)
-infos['env'].render()
+# game = GomokuEnvSimple()
+# policy = ZeroPolicy(board_size=9)
+# policy.load_state_dict(torch.load('models/gomoku_zero_multisteplr/policy_step_15000.pth'))
+# infos = self_play(policy, 'cpu', 200)
+# infos['env'].render()
+
 
 # %%
 if __name__ == "__main__":

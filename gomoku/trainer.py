@@ -1,7 +1,7 @@
 # %%
 import os
 from collections import deque
-from sched import scheduler
+from gomoku.player import Player, ZeroMCTSPlayer, arena_parallel
 from gomoku.worker import gather_selfplay_games
 import random
 from gomoku.policy import ZeroPolicy
@@ -18,21 +18,21 @@ board_size = 9
 lr = 1e-3
 steps = 20000
 save_per_steps = 500
-lab_name = 'gomoku_zero_multisteplr'
+lab_name = 'gomoku_zero_effective_zero'
 batch_size = 256
 
 # 采一次，至少用一次
 # 采一次，每条样本至少训练 3 次  采 40N 条，经过 M / 40N * circle 次过期，每次抽取 256 条, 每条至少训练 3 次
 # 所有 256 * M  / 40N * Circle / M 
-buffer_size =  12000
+buffer_size =  40000
 device = 'cuda'
 cpus = os.cpu_count() - 4
-self_play_per_steps = 10
-self_play_num = 20 
-eval_steps = 10
+self_play_per_steps = 20
+self_play_num = 50 
+eval_steps = 100
 games_per_worker = self_play_num // cpus
 num_workers = cpus
-itermax=200
+itermax=50
 seed=42
 
 # 1. gomoku_zero_ray 
@@ -43,24 +43,31 @@ seed=42
     # 使用 resnet 块 ✅
 # 4. arena 
     # 用于评测质量 ✅
-    # 生成对局时，使用最优模型
-# 5. gomoku_zero_scheduler
+# 5. gomoku_zero_scheduler  ✅
     # 用于调整学习率(ReduceLROnPlateau)
+# 6. gomoku_zero_effective_zero ✅
+    # 修复 zero 的问题，并使效率提升
+# 7. 样本优化（对称、使用最优模型生成）
+   # 生成对局时，使用最优模型
 
-def train(policy, optimizor, replay_buffer):
+def train(policy: ZeroPolicy, optimizor, replay_buffer):
     writer = SummaryWriter(f'runs/{lab_name}')
     ray.init(num_cpus=cpus)
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
     # scheduler = CosineAnnealingLR(optimizor, T_max=steps//2, eta_min=5e-5)
     scheduler = MultiStepLR(optimizor, milestones=[5000, 15000], gamma=0.1)
-    # train_set, val_set = [], []
+
+    best_policy = ZeroPolicy(board_size=9)
+    best_policy.load_state_dict(policy.state_dict())
+
+    update_count = 0
 
     for step in tqdm.tqdm(range(steps)):
         policy.train()
         if step % self_play_per_steps == 0:
             with torch.no_grad():
                 policy.eval()
-
+                # while len(replay_buffer) < buffer_size:
                 games = gather_selfplay_games(policy, 'cpu', itermax=itermax, games_per_worker=games_per_worker, num_workers=num_workers)
 
                 for game in games:
@@ -74,27 +81,36 @@ def train(policy, optimizor, replay_buffer):
 
             rich.print(f'Self play {self_play_num} times')
         
-        policy.eval()
-        # with torch.no_grad():
-        #     val_loss = 0
-        #     states, probs, rewards = zip(*val_set)
-        #     states_np = np.array(states)
-        #     probs_np = np.array(probs)
-        #     states = torch.from_numpy(states_np).float().to(device)
-        #     probs = torch.from_numpy(probs_np).float().to(device)
-        #     rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+        if step % eval_steps == 0:
+            policy.eval()
+            best_policy.eval()
 
-        #     logits, value = policy(states)
-        #     mse = F.mse_loss(value.squeeze(), rewards, reduce='mean')  
-        #     log_probs = F.log_softmax(logits, dim=-1)
-        #     cse = -torch.sum(probs * log_probs, dim=1).mean() # 先在每个样本上求和，再在batch上求平均
-        #     val_loss = mse.item() + cse.item()
-        #     val_loss /= len(val_set)
-        #     scheduler.step(val_loss)
-        #     writer.add_scalar('Loss/val_loss', val_loss, step)
+            policy_cpu_copy = ZeroPolicy(board_size=board_size).to('cpu')
+            policy_state_dict = policy.state_dict()
+            policy_cpu_copy.load_state_dict(policy_state_dict)
+            
+            best_policy_cpu_copy = ZeroPolicy(board_size=board_size).to('cpu')
+            best_policy_state_dict = best_policy.state_dict()
+            best_policy_cpu_copy.load_state_dict(best_policy_state_dict)
+            
+            player1 = ZeroMCTSPlayer(policy_cpu_copy, 40)
+            player2 = ZeroMCTSPlayer(best_policy_cpu_copy, 40)
+
+            r = arena_parallel(
+                player1,
+                player2,
+                games=50,
+            )
+
+            win_rate = r['player1_win_rate']
+            if win_rate >= 0.65:
+                best_policy.load_state_dict(policy.state_dict())
+                update_count += 1
+            
+            writer.add_scalar('Train/win-rate', win_rate)
+            writer.add_scalar('Train/update-count', update_count)
+
         
-        # if len(replay_buffer) < batch_size:
-            # continue
         policy.train()
         batch = random.sample(replay_buffer, batch_size)
 
