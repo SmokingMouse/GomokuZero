@@ -1,4 +1,5 @@
 #%%
+from tkinter.tix import Tree
 from gomoku.gomoku_env import GomokuEnv
 from gomoku.policy import ZeroPolicy
 import torch.nn.functional as F
@@ -57,35 +58,6 @@ class TreeNode:
         elif player == 3 - self.env.current_player:  # Assuming 1 and 2 are players
             self.wins -= result[1]
     
-    def is_fully_expanded(self):
-        """Check if the node is fully expanded"""
-        valid_actions = self.env.get_valid_actions()
-        return len(self.children) == len(valid_actions)
-
-class ZeroTreeNode:
-    def __init__(self, env: GomokuEnv, parent=None): # 添加 parent 初始化
-        self.env = env
-        self.visits = 0
-        self.value_sum = 0  # 使用 value_sum 代替 wins，更通用
-        self.children = {}
-        self.parent = parent
-        self.action_prob = None
-
-    def add_child(self, action, child_node):
-        self.children[action] = child_node
-
-    # update 方法接收一个从子节点视角看的 value
-    def update(self, value):
-        self.visits += 1
-        self.value_sum += value
-    
-    # Q-Value，即 exploitation 项
-    @property
-    def q_value(self):
-        if self.visits == 0:
-            return 0
-        return self.value_sum / self.visits
-
     def is_fully_expanded(self):
         """Check if the node is fully expanded"""
         valid_actions = self.env.get_valid_actions()
@@ -185,8 +157,7 @@ class MCTS:
         else:
             return exploitation + exploration
 
-
-class ZeroMCTS:
+class WrongZeroMCTS:
     def __init__(self, env: GomokuEnv, policy: ZeroPolicy, puct=5, device='cpu',
                 dirichlet_alpha = 0.3,
                 dirichlet_epsilon=0.25):
@@ -234,7 +205,7 @@ class ZeroMCTS:
                 (1 - self.dirichlet_epsilon) * self.root.action_prob[action] + \
                 self.dirichlet_epsilon * noise[i]
     
-    def _compute_policy_and_value(self, node: ZeroTreeNode):
+    def _compute_policy_and_value(self, node: TreeNode):
         """统一的网络调用函数"""
         # 如果已经计算过，直接返回（尽管在当前流程下不会发生）
         if node.action_prob is not None:
@@ -259,50 +230,6 @@ class ZeroMCTS:
         }
         
         return node.action_prob, value_tensor.item()
-    
-    # def _select(self, node: ZeroTreeNode):
-    #     current = node
-    #     while current.children:
-    #         current = max(current.children.values(), key=lambda child: self._puct_value(child))
-    #     return current
-    
-    # def _expand_and_evaluate(self, node: ZeroTreeNode):
-    #     if node.env._is_terminal():
-    #         winner = node.env.winner
-    #         if winner == 0:
-    #             return 0.0
-    #         if winner == (3-node.env.current_player):
-    #             return -1.0
-    #         else:
-    #             return 1.0
-
-    #     policy_probs, value = self._compute_policy_and_value(node) 
-
-    #     valid_actions = node.env.get_valid_actions()
-
-    #     for action in valid_actions:
-    #         if action not in node.children:
-    #             child_env = node.env.clone()
-    #             child_env.step(action)
-    #             node.add_child(action, ZeroTreeNode(child_env, parent=node))
-
-    #     return value
-    
-    # def _backpropagation(self, node: ZeroTreeNode, value: float):
-    #     current = node
-    #     while current is not None:
-    #         current.update(value)
-    #         value = -value
-    #         current = current.parent
-    
-    # def _puct_value(self, child: ZeroTreeNode):
-    #     q_value = -child.q_value
-    #     prior_prob = child.parent.action_prob[child.env.last_action]
-        
-    #     exploration_term = self.puct * prior_prob * \
-    #                        (math.sqrt(child.parent.visits) / (1 + child.visits))
-        
-    #     return q_value + exploration_term
     
     def _select(self, node: TreeNode):
         """Select node using PUCT"""
@@ -395,7 +322,7 @@ class ZeroMCTS:
             current.update(result)
             current = current.parent
 
-    def _best_action(self, root: ZeroTreeNode):
+    def _best_action(self, root: TreeNode):
         """Return the best action based on visit count"""
         if not root.children:
             return random.choice(root.env.get_valid_actions())
@@ -448,13 +375,13 @@ if __name__ == '__main__':
     policy = ZeroPolicy(board_size=9)
     game = GomokuEnv(board_size=9)
 
-    game.board[0, :4] = 1
-    game.board[1, :4] = 2
+    game.board[0, 1:4] = 1
+    game.board[1, 1:4] = 2
 
     game.render()
-    zero_player = ZeroMCTS(game, policy)
+    zero_player = WrongZeroMCTS(game, policy)
     # %%
-    action = zero_player.run(3000)
+    action = zero_player.run(300)
     print(f"Best action: {action}")
     # %%
     # zero_player.root.
