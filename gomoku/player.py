@@ -153,6 +153,7 @@ def play_one_game(player1, player2, game: GomokuEnvSimple = None):
         'states': states,
         'probs': probs,
         'rewards': rewards,
+        'env': env
     }
 
 
@@ -257,10 +258,11 @@ def arena_parallel(player1_main, player2_main, games=100, num_cpus=None):
         'draw_rate': draw_rate,
     }
 # %%
-# game = GomokuEnvSimple()
-# policy = ZeroPolicy(board_size=9)
-# policy.load_state_dict(torch.load('models/gomoku_zero_freqency/policy_step_2500.pth'))
-# _ = self_play(policy, 'cpu', 400)
+game = GomokuEnvSimple()
+policy = ZeroPolicy(board_size=9)
+policy.load_state_dict(torch.load('models/gomoku_zero_multisteplr/policy_step_15000.pth'))
+infos = self_play(policy, 'cpu', 200)
+infos['env'].render()
 
 # %%
 if __name__ == "__main__":

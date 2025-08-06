@@ -1,12 +1,12 @@
 # %%
 import os
 from collections import deque
+from sched import scheduler
 from gomoku.worker import gather_selfplay_games
 import random
 from gomoku.policy import ZeroPolicy
 from torch.utils.tensorboard import SummaryWriter
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-from sklearn.model_selection import train_test_split
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR, MultiStepLR
 import torch
 import torch.nn.functional as F
 import rich
@@ -15,10 +15,10 @@ import numpy as np
 import ray
 
 board_size = 9
-lr = 2e-3
-steps = 15000
+lr = 1e-3
+steps = 20000
 save_per_steps = 500
-lab_name = 'gomoku_zero_lrscheduler'
+lab_name = 'gomoku_zero_multisteplr'
 batch_size = 256
 
 # 采一次，至少用一次
@@ -50,8 +50,10 @@ seed=42
 def train(policy, optimizor, replay_buffer):
     writer = SummaryWriter(f'runs/{lab_name}')
     ray.init(num_cpus=cpus)
-    scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
-    train_set, val_set = [], []
+    # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
+    # scheduler = CosineAnnealingLR(optimizor, T_max=steps//2, eta_min=5e-5)
+    scheduler = MultiStepLR(optimizor, milestones=[5000, 15000], gamma=0.1)
+    # train_set, val_set = [], []
 
     for step in tqdm.tqdm(range(steps)):
         policy.train()
@@ -68,33 +70,33 @@ def train(policy, optimizor, replay_buffer):
                             game['probs'][i],
                             game['rewards'][i]
                         ))
-                train_set, val_set = train_test_split(replay_buffer, test_size=0.1)
+                # train_set, val_set = train_test_split(replay_buffer, test_size=0.1)
 
             rich.print(f'Self play {self_play_num} times')
         
         policy.eval()
-        with torch.no_grad():
-            val_loss = 0
-            states, probs, rewards = zip(*val_set)
-            states_np = np.array(states)
-            probs_np = np.array(probs)
-            states = torch.from_numpy(states_np).float().to(device)
-            probs = torch.from_numpy(probs_np).float().to(device)
-            rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
+        # with torch.no_grad():
+        #     val_loss = 0
+        #     states, probs, rewards = zip(*val_set)
+        #     states_np = np.array(states)
+        #     probs_np = np.array(probs)
+        #     states = torch.from_numpy(states_np).float().to(device)
+        #     probs = torch.from_numpy(probs_np).float().to(device)
+        #     rewards = torch.tensor(rewards, dtype=torch.float32).to(device)
 
-            logits, value = policy(states)
-            mse = F.mse_loss(value.squeeze(), rewards, reduce='mean')  
-            log_probs = F.log_softmax(logits, dim=-1)
-            cse = -torch.sum(probs * log_probs, dim=1).mean() # 先在每个样本上求和，再在batch上求平均
-            val_loss = mse.item() + cse.item()
-            val_loss /= len(val_set)
-            scheduler.step(val_loss)
-            writer.add_scalar('Loss/val_loss', val_loss, step)
+        #     logits, value = policy(states)
+        #     mse = F.mse_loss(value.squeeze(), rewards, reduce='mean')  
+        #     log_probs = F.log_softmax(logits, dim=-1)
+        #     cse = -torch.sum(probs * log_probs, dim=1).mean() # 先在每个样本上求和，再在batch上求平均
+        #     val_loss = mse.item() + cse.item()
+        #     val_loss /= len(val_set)
+        #     scheduler.step(val_loss)
+        #     writer.add_scalar('Loss/val_loss', val_loss, step)
         
         # if len(replay_buffer) < batch_size:
             # continue
         policy.train()
-        batch = random.sample(train_set, batch_size)
+        batch = random.sample(replay_buffer, batch_size)
 
         states, probs, rewards = zip(*batch)
         states_np = np.array(states)
@@ -117,6 +119,7 @@ def train(policy, optimizor, replay_buffer):
         loss = (mse + cse) #/ batch_size
         loss.backward()
         optimizor.step()
+        scheduler.step()
 
         probs_from_log = torch.exp(log_probs)
         entropy = -torch.sum(probs_from_log * log_probs, dim=1).mean()
