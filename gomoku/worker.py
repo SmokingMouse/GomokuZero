@@ -34,8 +34,27 @@ def gather_selfplay_games(policy, device, board_size=9, itermax=800, num_workers
     set_weights_tasks = [worker.set_weights.remote(weights_ref) for worker in workers]
     ray.get(set_weights_tasks) # 等待权重设置完成
     game_futures = [worker.play_game.remote(itermax) for _ in range(games_per_worker) for worker in workers] # 简化版任务分配
-    games = ray.get(game_futures)
-    return games
+
+    games_results = []
+    
+    # 当还有未完成的任务时，循环等待
+    while game_futures:
+        # 等待至少一个任务完成
+        ready_refs, remaining_refs = ray.wait(game_futures, num_returns=1)
+        
+        # 获取已完成任务的结果，并将其添加到结果列表中
+        # 这一步一次只从对象存储中取出一个游戏的数据
+        result = ray.get(ready_refs[0])
+        games_results.append(result)
+        
+        # 更新待办列表，继续等待下一个
+        game_futures = remaining_refs
+        
+    return games_results
+
+
+    # games = ray.get(game_futures)
+    # return games
 
 def get_symmetric_data(state, pi):
     """
