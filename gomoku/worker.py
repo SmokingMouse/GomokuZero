@@ -7,7 +7,7 @@ import ray
 import numpy as np
 
 # 1. 初始化 Ray
-@ray.remote
+@ray.remote(num_cpus=1)
 class SelfPlayWorker:
     def __init__(self, board_size, device):
         self.policy = ZeroPolicy(board_size=board_size).to(device)
@@ -20,8 +20,8 @@ class SelfPlayWorker:
         self.policy.eval()
 
     def play_game(self, itermax):
-        return self_play(self.policy, self.device, itermax)
-    
+        return self_play(self.policy, self.device, itermax=itermax, board_size=self.board_size)
+
 def gather_selfplay_games(policy, device, board_size=9, itermax=800, num_workers=6, games_per_worker=5):
     """
     在单个 worker 上进行 self-play，返回游戏数据。
@@ -56,17 +56,17 @@ def gather_selfplay_games(policy, device, board_size=9, itermax=800, num_workers
     # games = ray.get(game_futures)
     # return games
 
-def get_symmetric_data(state, pi):
+def get_symmetric_data(state, pi, board_size=9):
     """
     生成棋盘状态和策略的对称增强样本（旋转+翻转）
     假设state形状为(C, 9, 9)，pi长度为81（对应9x9棋盘）
     """
     # 输入校验
     assert isinstance(state, np.ndarray), "state应为numpy数组"
-    assert state.ndim == 3 and state.shape[1:] == (9, 9), "state形状应为(C, 9, 9)"
-    assert len(pi) == 81, f"pi长度必须为81，实际为{len(pi)}"
+    assert state.ndim == 3 and state.shape[1:] == (board_size, board_size), "state形状应为(C, 9, 9)"
+    assert len(pi) == board_size * board_size, f"pi长度必须为81，实际为{len(pi)}"
     
-    pi_board = np.asarray(pi).reshape((9, 9))
+    pi_board = np.asarray(pi).reshape((board_size, board_size))
     augmented_samples = []
     
     # 4种旋转（0/90/180/270度）+ 水平翻转，共8种对称

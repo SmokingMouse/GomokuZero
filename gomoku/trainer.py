@@ -14,26 +14,28 @@ import tqdm
 import numpy as np
 import ray
 
-board_size = 9
+board_size = 15
 lr = 5e-4
-steps = 40000
+steps = 200000
 save_per_steps = 500
-lab_name = 'gomoku_zero_effective_zero_with_data_improving'
+lab_name = 'gomoku_zero_15'
 batch_size = 256
 
 # 采一次，至少用一次
 # 采一次，每条样本至少训练 3 次  采 40N 条，经过 M / 40N * circle 次过期，每次抽取 256 条, 每条至少训练 3 次
 # 所有 256 * M  / 40N * Circle / M 
-buffer_size = 80000
+buffer_size = 200000
 device = 'cuda'
-cpus = os.cpu_count() - 4
-self_play_per_steps = 20
-self_play_num = 16 
-eval_steps = 400
+cpus = os.cpu_count() // 2
+self_play_per_steps = 150
+self_play_num = 32
+eval_steps = 600
 games_per_worker = self_play_num // cpus
 num_workers = cpus
 itermax=200
 seed=42
+
+threshold=0.2
 
 # 1. gomoku_zero_ray 
     # 使用 ray 加速采样 ✅
@@ -47,7 +49,7 @@ seed=42
     # 用于调整学习率(ReduceLROnPlateau)
 # 6. gomoku_zero_effective_zero ✅
     # 修复 zero 的问题，并使效率提升
-# 7. 样本优化（对称、使用最优模型生成）
+# 7. 样本优化（对称、使用最优模型生成） ✅
    # 生成对局时，使用最优模型
 
 def train(policy: ZeroPolicy, optimizor, replay_buffer):
@@ -55,9 +57,9 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
     ray.init(num_cpus=cpus)
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
     # scheduler = CosineAnnealingLR(optimizor, T_max=steps//2, eta_min=5e-5)
-    scheduler = MultiStepLR(optimizor, milestones=[10000, 20000, 30000], gamma=0.2)
+    scheduler = MultiStepLR(optimizor, milestones=[100000, 150000], gamma=0.2)
 
-    best_policy = ZeroPolicy(board_size=9)
+    best_policy = ZeroPolicy(board_size=board_size)
     best_policy.load_state_dict(policy.state_dict())
 
     update_count = 0
@@ -66,13 +68,14 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         policy.train()
         if step % self_play_per_steps == 0:
             with torch.no_grad():
-                # policy.eval()
-                best_policy.eval()
-                # while len(replay_buffer) < buffer_size:
-                games = gather_selfplay_games(best_policy, 'cpu', itermax=itermax, games_per_worker=games_per_worker, num_workers=num_workers)
+                # 使用一定比例的最优模型进行 self-play
+                generate_model = best_policy if random.random() > threshold else policy
+
+                generate_model.eval()
+                games = gather_selfplay_games(generate_model, 'cpu', board_size=board_size, itermax=itermax, games_per_worker=games_per_worker, num_workers=num_workers)
                 for game in games:
                     for i in range(len(game['states'])):
-                        augmented_samples = get_symmetric_data(game['states'][i], game['probs'][i])
+                        augmented_samples = get_symmetric_data(game['states'][i], game['probs'][i], board_size=board_size)
                         for state, pi in augmented_samples:
                             replay_buffer.append((
                                 state,
@@ -93,13 +96,12 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             best_policy_state_dict = best_policy.state_dict()
             best_policy_cpu_copy.load_state_dict(best_policy_state_dict)
             
-            player1 = ZeroMCTSPlayer(policy_cpu_copy, 200)
-            player2 = ZeroMCTSPlayer(best_policy_cpu_copy, 200)
-
             r = arena_parallel(
-                player1,
-                player2,
+                policy_cpu_copy,
+                best_policy_cpu_copy,
                 games=50,
+                board_size=board_size,
+                num_cpus=cpus
             )
 
             win_rate = r['player1_win_rate']
@@ -126,7 +128,6 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         optimizor.zero_grad()
 
         logits, value = policy(states)
-        # batch_size = len(records['states'])
         
         mse = F.mse_loss(value.squeeze(), rewards, reduce='mean')  
         log_probs = F.log_softmax(logits, dim=-1)
@@ -166,5 +167,4 @@ if __name__ == "__main__":
 
     policy = ZeroPolicy(board_size=board_size).to(device)
     optimizor = torch.optim.Adam(policy.parameters(), lr=lr, weight_decay=1e-4)
-    # Create directory if not exists
     train(policy, optimizor, buffer)
