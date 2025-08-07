@@ -181,24 +181,24 @@ class RandomPlayer(Player):
 
         return action
 
-def self_play(policy, device, itermax=800):
+def self_play(policy, device, board_size, itermax=800):
     # game = GomokuEnvSimple()
     player1 = ZeroMCTSPlayer(policy, itermax=itermax, device=device)
     player2 = ZeroMCTSPlayer(policy, itermax=itermax, device=device)
 
-    winner, infos = play_one_game(player1, player2)
+    winner, infos = play_one_game(player1, player2, board_size=board_size)
     print(f"Game over! Winner: {winner}")
     return infos
 
 @timer
-def play_one_game(player1, player2, game: GomokuEnvSimple = None,
+def play_one_game(player1, player2, board_size: int, game: GomokuEnv = None,
                   render=False):
     states = []
     probs = []
     rewards = []
 
     if game is None:
-        env = GomokuEnvSimple()
+        env = GomokuEnv(board_size)
     else:
         env = game
     
@@ -258,63 +258,53 @@ def play_one_game(player1, player2, game: GomokuEnvSimple = None,
     }
 
 
+# @ray.remote(num_cpus=2)
+# def play_game_worker(player1, player2, board_size):
+#     return play_one_game(player1, player2, board_size=board_size)
+
 @ray.remote
-def play_game_worker(player1, player2):
-    return play_one_game(player1, player2)
+class ArenaWorker:
+    def __init__(self, player1_model: ZeroPolicy, player2_model: ZeroPolicy, board_size: int, itermax: int = 200, eager: bool = False):
+        # 在 Actor 创建时，一次性初始化 Player 对象
+        # 这个包含了神经网络的反序列化过程，只会在 Actor 启动时发生一次！
+        self.player1 = ZeroMCTSPlayer(player1_model, itermax=itermax, eager=eager)
+        self.player2 = ZeroMCTSPlayer(player2_model, itermax=itermax, eager=eager)
+        self.board_size = board_size
 
-@timer
-def arena(player1, player2, games = 1):
-    ray.init(os.cpu_count()-4)
-    player1_win_count = 0
-    for game in range(games):
-        # env = GomokuEnvSimple()
-        player1_turn = random.choice([1, 2])
-        if player1_turn == 1:
-            winner, _ = play_one_game(player1, player2)
+    def run_game(self, player1_starts:bool):
+        if player1_starts:
+            first_player, second_player = self.player1, self.player2
         else:
-            winner, _ = play_one_game(player2, player1)
-
-        if winner == player1_turn:
-            player1_win_count += 1
-    ray.shutdown()
-    return player1_win_count / games
+            first_player, second_player = self.player2, self.player1
+            
+        # 调用你的 play_one_game 逻辑
+        return play_one_game(first_player, second_player, board_size=self.board_size)
 
 @timer
-def arena_parallel(player1_main, player2_main, games=100, num_cpus=None):
-    if num_cpus is None:
-        num_cpus = os.cpu_count()
-
+def arena_parallel(policy1, policy2, board_size, num_cpus, games=100, eager=False, itermax=200):
     # 初始化 Ray
     if not ray.is_initialized():
         ray.init(num_cpus=num_cpus)
     
     print(f"Starting parallel arena with {games} games on {num_cpus} CPUs...")
-    
-    # 将大的玩家对象放入 Ray 对象存储
-    p1_ref = ray.put(player1_main)
-    p2_ref = ray.put(player2_main)
-    
-    task_refs = []
-    player1_turn_flags = [] # 记录每场比赛是不是 player1_main 先手
+    p1_ref = ray.put(policy1)
+    p2_ref = ray.put(policy2)
 
-    for _ in range(games):
-        # 随机决定谁先手
-        if random.choice([True, False]):
-            # player1_main 执黑先手
-            first_player_ref = p1_ref
-            second_player_ref = p2_ref
-            player1_turn_flags.append(True)
-        else:
-            # player2_main 执黑先手
-            first_player_ref = p2_ref
-            second_player_ref = p1_ref
-            player1_turn_flags.append(False)
-            
-        # 启动远程任务，play_one_game 总是认为第一个参数是先手
-        task = play_game_worker.remote(first_player_ref, second_player_ref)
-        task_refs.append(task)
+    actor_pool = [ArenaWorker.remote(p1_ref, p2_ref, board_size, eager, itermax) for _ in range(num_cpus)]
+    pool_size = len(actor_pool)
+
+    task_refs = []
+    player1_turn_flags = []
+
+    for i in range(games):
+        player1_starts = random.choice([True, False])
+        player1_turn_flags.append(player1_starts)
         
-    # 等待并收集所有比赛结果
+        actor = actor_pool[i % pool_size]
+        
+        task = actor.run_game.remote(player1_starts)
+        task_refs.append(task)
+
     results = ray.get(task_refs)
     
     # 提取所有获胜者编号 (1=先手胜, 2=后手胜, 0=平局)
@@ -329,7 +319,7 @@ def arena_parallel(player1_main, player2_main, games=100, num_cpus=None):
         winner = raw_winners[i]
         is_p1_turn = player1_turn_flags[i]
         
-        if winner == 0:
+        if winner == 0 or winner is None:  # 平局或无胜者
             draws += 1
         elif winner == 1: # 先手获胜
             if is_p1_turn:
@@ -376,25 +366,26 @@ if __name__ == "__main__":
     argparse.add_argument('--model1', type=str, default='gomoku_zero_resnet/policy_step_2500.pth')
     argparse.add_argument('--model2', type=str, default='gomoku_zero_resnet_play30/policy_step_4000.pth')
     argparse.add_argument('--pure_mcts_iter', type=int, default=0)
+    argparse.add_argument('--root', type=str, default='/home/zhangpeng.pada/GomokuZero/gomoku/models')
 
     args = argparse.parse_args()
 
     # ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
-    ROOT_PATH = '/home/zhangpeng.pada/GomokuZero/gomoku/models'
+    ROOT_PATH = args.root
 
     board_size = 9
     game = GomokuEnv(board_size=board_size)
     policy = ZeroPolicy(board_size)
     policy.load_state_dict(torch.load(os.path.join(ROOT_PATH, args.model1)))
-    player1 = ZeroMCTSPlayer(policy, itermax=args.itermax, eager=False)
+    # player1 = ZeroMCTSPlayer(policy, itermax=args.itermax, eager=False)
 
-    if args.pure_mcts_iter > 0:
-        player2 = MCTSPlayer(game, itermax=args.pure_mcts_iter)
-    else:
-        policy2 = ZeroPolicy(board_size)
-        policy2.load_state_dict(torch.load(os.path.join(ROOT_PATH, args.model2)))
-        player2 = ZeroMCTSPlayer(policy2, itermax=args.itermax, eager=False)
+    # if args.pure_mcts_iter > 0:
+        # player2 = MCTSPlayer(game, itermax=args.pure_mcts_iter)
+    # else:
+    policy2 = ZeroPolicy(board_size)
+    policy2.load_state_dict(torch.load(os.path.join(ROOT_PATH, args.model2)))
+    # player2 = ZeroMCTSPlayer(policy2, itermax=args.itermax, eager=False)
 
-    win_rate = arena_parallel(player1, player2, games=args.games)
+    win_rate = arena_parallel(policy, policy2, games=args.games, board_size=9, num_cpus=os.cpu_count()//2)
     print(f"Win rate: {win_rate}")
 # %%
