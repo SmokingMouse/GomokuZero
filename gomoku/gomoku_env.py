@@ -1,3 +1,4 @@
+from tkinter import NO
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any
 import gymnasium as gym
@@ -148,12 +149,13 @@ class GomokuEnv(gym.Env):
     
     def _get_info(self) -> Dict[str, Any]:
         """Get additional information about the current state."""
-        return {
-            'current_player': self.current_player,
-            'winner': self.winner,
-            'move_history': self.move_history.copy(),
-            'valid_actions': self.get_valid_actions()
-        }
+        return None
+        # return {
+        #     'current_player': self.current_player,
+        #     'winner': self.winner,
+        #     'move_history': self.move_history.copy(),
+        #     'valid_actions': self.get_valid_actions()
+        # }
     
     def get_valid_actions(self) -> List[int]:
         """Get list of valid actions (empty positions)."""
@@ -185,12 +187,19 @@ class GomokuEnv(gym.Env):
     
     def clone(self) -> 'GomokuEnv':
         """Create a deep copy of the current environment state."""
-        new_env = GomokuEnv(self.board_size)
+        new_env = self.__class__.__new__(self.__class__)
+        # new_env = GomokuEnv(self.board_size)
         new_env.board = self.board.copy()
         new_env.current_player = self.current_player
         new_env.winner = self.winner
         new_env.done = self.done
-        new_env.move_history = self.move_history.copy()
+        new_env.last_action = self.last_action
+        new_env.move_size = self.move_size
+        new_env.enable_history = self.enable_history
+        new_env.board_size = self.board_size
+        new_env.action_space = self.action_space
+        new_env.observation_space = self.observation_space
+        # new_env.move_history = self.move_history.copy()
         return new_env
 
 
