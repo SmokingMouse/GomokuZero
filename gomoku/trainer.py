@@ -14,28 +14,36 @@ import tqdm
 import numpy as np
 import ray
 
-board_size = 15
+board_size = 9
 lr = 5e-4
-steps = 200000
 save_per_steps = 500
-lab_name = 'gomoku_zero_15'
-batch_size = 256
-
-# 采一次，至少用一次
-# 采一次，每条样本至少训练 3 次  采 40N 条，经过 M / 40N * circle 次过期，每次抽取 256 条, 每条至少训练 3 次
-# 所有 256 * M  / 40N * Circle / M 
-buffer_size = 200000
+cpus = 16
 device = 'cuda'
-cpus = os.cpu_count() // 2
-self_play_per_steps = 150
-self_play_num = 32
-eval_steps = 600
-games_per_worker = self_play_num // cpus
-num_workers = cpus
-itermax=200
 seed=42
 
+lab_name = 'gomoku_zero_9'
+batch_size = 256
 threshold=0.2
+itermax=200
+
+if board_size == 15:
+    steps=200000
+    buffer_size = 200000
+    self_play_per_steps = 150
+    self_play_num = 32
+    eval_steps = 600
+    games_per_worker = self_play_num // cpus
+    num_workers = cpus
+elif board_size == 9:
+    steps = 40000
+    buffer_size = 80000
+    self_play_per_steps = 20
+    self_play_num = 16
+    eval_steps = 100
+    games_per_worker = self_play_num // cpus
+    num_workers = cpus
+
+
 
 # 1. gomoku_zero_ray 
     # 使用 ray 加速采样 ✅
@@ -57,7 +65,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
     ray.init(num_cpus=cpus)
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
     # scheduler = CosineAnnealingLR(optimizor, T_max=steps//2, eta_min=5e-5)
-    scheduler = MultiStepLR(optimizor, milestones=[100000, 150000], gamma=0.2)
+    scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
 
     best_policy = ZeroPolicy(board_size=board_size)
     best_policy.load_state_dict(policy.state_dict())
@@ -84,7 +92,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
                             ))
             rich.print(f'Self play {self_play_num} times')
         
-        if step % eval_steps == 0:
+        if step != 0 and step % eval_steps == 0:
             policy.eval()
             best_policy.eval()
 
@@ -101,7 +109,9 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
                 best_policy_cpu_copy,
                 games=50,
                 board_size=board_size,
-                num_cpus=cpus
+                num_cpus=cpus,
+                eager=False,
+                itermax=itermax
             )
 
             win_rate = r['player1_win_rate']
@@ -165,6 +175,8 @@ if __name__ == "__main__":
     random.seed(seed)
     buffer = deque(maxlen=buffer_size)
 
-    policy = ZeroPolicy(board_size=board_size).to(device)
+    policy = ZeroPolicy(board_size=board_size)
+    # policy.load_state_dict(torch.load(f'models/gomoku_zero_15/policy_step_13500.pth'))
+    policy.to(device)
     optimizor = torch.optim.Adam(policy.parameters(), lr=lr, weight_decay=1e-4)
     train(policy, optimizor, buffer)

@@ -1,6 +1,8 @@
 
 # %% 
 from email.policy import Policy
+import time
+import rich
 from tkinter import NO
 from gomoku.mcts import MCTS, WrongZeroMCTS
 from gomoku.zero_mcts import ZeroMCTS
@@ -33,7 +35,7 @@ class Player:
         raise NotImplementedError("This method should be overridden by subclasses.")
 
 class MCTSPlayer(Player):
-    def __init__(self, game: GomokuEnv, itermax=2000):
+    def __init__(self, game: GomokuEnv, itermax=200):
         super().__init__("MCTS Player")
         # self.game = game
         self.itermax = itermax
@@ -89,7 +91,7 @@ class IneffectiveZeroMCTSPlayer(Player):
         }
 
 class WrongZeroMCTSPlayer(Player):
-    def __init__(self, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
+    def __init__(self, policy: ZeroPolicy, itermax=200, device='cpu', eager=False):
         super().__init__("Wrong ZeroMCTS Player")
         self.itermax = itermax
         self.policy = policy
@@ -127,12 +129,10 @@ class WrongZeroMCTSPlayer(Player):
         }
 
 class ZeroMCTSPlayer(Player):
-    def __init__(self, policy: ZeroPolicy, itermax=2000, device='cpu', eager=False):
+    def __init__(self, policy: ZeroPolicy, device = 'cpu'):
         super().__init__("ZeroMCTS Player")
-        self.itermax = itermax
         self.policy = policy
         self.device = device
-        self.eager = eager
 
     # @timer
     def play(self, game, *args, **kwargs):
@@ -140,26 +140,24 @@ class ZeroMCTSPlayer(Player):
         # Implement MCTS logic here
         current_state = game._get_observation()# 关键，不能是执行动作后的状态
 
-        mcts = kwargs.get('mcts', None)
+        mcts = kwargs.get('mcts')
+        itermax = kwargs.get('itermax')
 
-        if mcts is None:
-            if self.eager:
-                mcts = ZeroMCTS(game, self.policy, device=self.device, dirichlet_alpha=0) 
-            else:
-                mcts = ZeroMCTS(game, self.policy, device=self.device) 
-
-        mcts.run(self.itermax)
+        if mcts is None or itermax is None:
+            raise ValueError("MCTS instance and itermax must be provided in kwargs.")
+        mcts.run(itermax)
 
         num_moves = game.move_size # 你需要一个方法来获取当前是第几步
-        if self.eager:
+
+        eager = kwargs.get('eager', False)
+
+        if eager:
             temperature = 0.0
         else:
-            temperature = 1.0 if num_moves < 10 else 0.0
+            temperature = 1.0 if num_moves < 30 else 0.0
 
         # 使用带温度的采样来选择最终动作
         action, probs_for_training = mcts.select_action_with_temperature(temperature)
-
-        game.step(action)
 
         return {
             'action': action, 
@@ -181,18 +179,21 @@ class RandomPlayer(Player):
 
         return action
 
-def self_play(policy, device, board_size, itermax=800):
-    # game = GomokuEnvSimple()
-    player1 = ZeroMCTSPlayer(policy, itermax=itermax, device=device)
-    player2 = ZeroMCTSPlayer(policy, itermax=itermax, device=device)
+def self_play(policy, device, board_size, itermax=200):
+    player1 = ZeroMCTSPlayer(policy, device=device)
+    player2 = ZeroMCTSPlayer(policy, device=device)
 
-    winner, infos = play_one_game(player1, player2, board_size=board_size)
+    winner, infos = play_one_game(
+        player1, player2, board_size=board_size,
+        itermax=itermax, eager=False
+    )
     print(f"Game over! Winner: {winner}")
     return infos
 
 @timer
-def play_one_game(player1, player2, board_size: int, game: GomokuEnv = None,
-                  render=False):
+def play_one_game(player1, player2, board_size: int, 
+                  game: GomokuEnv = None,
+                  render=False, itermax=200, eager=False):
     states = []
     probs = []
     rewards = []
@@ -202,39 +203,39 @@ def play_one_game(player1, player2, board_size: int, game: GomokuEnv = None,
     else:
         env = game
     
-    mcts1, mcts2 = None, None
-
-    is_player1_zero_mcts = isinstance(player1, ZeroMCTSPlayer)
-    is_player2_zero_mcts = isinstance(player2, ZeroMCTSPlayer)
-
-    if is_player1_zero_mcts:
-        mcts1 = ZeroMCTS(env, player1.policy)
-    
-    if is_player2_zero_mcts:
-        mcts2 = ZeroMCTS(env, player2.policy)
+    mcts1 = ZeroMCTS(env, player1.policy, device=player1.device)
+    mcts2 = ZeroMCTS(env, player2.policy, device=player2.device)
 
     while not env._is_terminal():
-        infos = player1.play(env, mcts=mcts1) 
+        infos = player1.play(env, **{
+            'mcts': mcts1, 
+            'itermax': itermax, 
+            'eager': eager
+        }) 
         states.append(infos['state'])
         probs.append(infos['probs'])
 
-        if is_player1_zero_mcts:
-            mcts1.update_root(infos['action'])
-        if is_player2_zero_mcts:
-            mcts2.update_root(infos['action'])
-
+        action1 = infos['action']
+        env.step(action1)
+        mcts1.update_root(action1)
+        mcts2.update_root(action1)
         if render:
             env.render()
         if env._is_terminal():
             break
-        infos = player2.play(env, mcts=mcts2)
+        infos = player2.play(env, **{
+            'mcts': mcts2, 
+            'itermax': itermax, 
+            'eager': eager
+        })
         states.append(infos['state'])
         probs.append(infos['probs'])
 
-        if is_player1_zero_mcts:
-            mcts1.update_root(infos['action'])
-        if is_player2_zero_mcts:
-            mcts2.update_root(infos['action'])
+        action2 = infos['action']
+        env.step(action2)
+        mcts1.update_root(action2)
+        mcts2.update_root(action2)
+
 
         if render:
             env.render()
@@ -250,6 +251,7 @@ def play_one_game(player1, player2, board_size: int, game: GomokuEnv = None,
         else:
             rewards.append(-1)
     
+    
     return winner, {
         'states': states,
         'probs': probs,
@@ -257,19 +259,16 @@ def play_one_game(player1, player2, board_size: int, game: GomokuEnv = None,
         'env': env
     }
 
-
-# @ray.remote(num_cpus=2)
-# def play_game_worker(player1, player2, board_size):
-#     return play_one_game(player1, player2, board_size=board_size)
-
 @ray.remote
 class ArenaWorker:
     def __init__(self, player1_model: ZeroPolicy, player2_model: ZeroPolicy, board_size: int, itermax: int = 200, eager: bool = False):
         # 在 Actor 创建时，一次性初始化 Player 对象
         # 这个包含了神经网络的反序列化过程，只会在 Actor 启动时发生一次！
-        self.player1 = ZeroMCTSPlayer(player1_model, itermax=itermax, eager=eager)
-        self.player2 = ZeroMCTSPlayer(player2_model, itermax=itermax, eager=eager)
+        self.player1 = ZeroMCTSPlayer(player1_model)
+        self.player2 = ZeroMCTSPlayer(player2_model)
         self.board_size = board_size
+        self.itermax = itermax
+        self.eager = eager
 
     def run_game(self, player1_starts:bool):
         if player1_starts:
@@ -277,8 +276,14 @@ class ArenaWorker:
         else:
             first_player, second_player = self.player2, self.player1
             
-        # 调用你的 play_one_game 逻辑
-        return play_one_game(first_player, second_player, board_size=self.board_size)
+        s = play_one_game(
+            first_player, 
+            second_player, 
+            board_size=self.board_size, 
+            itermax=self.itermax, 
+            eager=self.eager 
+        )
+        return s
 
 @timer
 def arena_parallel(policy1, policy2, board_size, num_cpus, games=100, eager=False, itermax=200):
@@ -290,7 +295,7 @@ def arena_parallel(policy1, policy2, board_size, num_cpus, games=100, eager=Fals
     p1_ref = ray.put(policy1)
     p2_ref = ray.put(policy2)
 
-    actor_pool = [ArenaWorker.remote(p1_ref, p2_ref, board_size, eager, itermax) for _ in range(num_cpus)]
+    actor_pool = [ArenaWorker.remote(p1_ref, p2_ref, board_size=board_size, eager=eager, itermax=itermax) for _ in range(num_cpus)]
     pool_size = len(actor_pool)
 
     task_refs = []

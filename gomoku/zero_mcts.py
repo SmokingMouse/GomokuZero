@@ -102,7 +102,11 @@ class ZeroMCTS:
             
         # Mask invalid actions
         mask = torch.full_like(policy_logits, -1e8)
-        mask[0, valid_actions_tensor] = 0.0
+        try:
+            mask[0, valid_actions_tensor] = 0.0
+            
+        except Exception:
+            print(f"Error applying mask: {valid_actions_tensor}, logits shape: {policy_logits.shape}")
         masked_logits = policy_logits + mask
         
         # Convert to probabilities
@@ -188,6 +192,7 @@ class ZeroMCTS:
         # π 是不加温度的、归一化的访问次数，代表了MCTS的“思考结果”
         pi_distribution = {a: node.visits for a, node in self.root.children.items()}
         total_visits = sum(pi_distribution.values())
+        total_visits = total_visits if total_visits > 0 else 1  # 防止除以零
         probs_for_training = [pi_distribution.get(i, 0) / total_visits for i in range(self.root.env.board_size**2)]
     
         return chosen_action, probs_for_training

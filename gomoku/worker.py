@@ -1,13 +1,14 @@
 
 #%%
-
+import time
 from gomoku.player import self_play
 from gomoku.policy import ZeroPolicy
 import ray
 import numpy as np
+from gomoku.utils import timer
 
 # 1. 初始化 Ray
-@ray.remote(num_cpus=1)
+@ray.remote
 class SelfPlayWorker:
     def __init__(self, board_size, device):
         self.policy = ZeroPolicy(board_size=board_size).to(device)
@@ -20,35 +21,25 @@ class SelfPlayWorker:
         self.policy.eval()
 
     def play_game(self, itermax):
-        return self_play(self.policy, self.device, itermax=itermax, board_size=self.board_size)
+        r = self_play(self.policy, self.device, itermax=itermax, board_size=self.board_size)
+        return r
 
-def gather_selfplay_games(policy, device, board_size=9, itermax=800, num_workers=6, games_per_worker=5):
+@timer
+def gather_selfplay_games(policy, device, board_size=9, itermax=200, num_workers=6, games_per_worker=5):
     """
     在单个 worker 上进行 self-play，返回游戏数据。
     """
     policy.eval()
 
     weights_ref = ray.put({k: v.cpu() for k, v in policy.state_dict().items()})
+    # ray.put(policy)
 
     workers = [SelfPlayWorker.remote(board_size, device) for _ in range(num_workers)]
     set_weights_tasks = [worker.set_weights.remote(weights_ref) for worker in workers]
     ray.get(set_weights_tasks) # 等待权重设置完成
     game_futures = [worker.play_game.remote(itermax) for _ in range(games_per_worker) for worker in workers] # 简化版任务分配
 
-    games_results = []
-    
-    # 当还有未完成的任务时，循环等待
-    while game_futures:
-        # 等待至少一个任务完成
-        ready_refs, remaining_refs = ray.wait(game_futures, num_returns=1)
-        
-        # 获取已完成任务的结果，并将其添加到结果列表中
-        # 这一步一次只从对象存储中取出一个游戏的数据
-        result = ray.get(ready_refs[0])
-        games_results.append(result)
-        
-        # 更新待办列表，继续等待下一个
-        game_futures = remaining_refs
+    games_results = ray.get(game_futures)
         
     return games_results
 
