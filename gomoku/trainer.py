@@ -21,10 +21,11 @@ cpus = 16
 device = 'cuda'
 seed=42
 
-lab_name = 'gomoku_zero_9'
+lab_name = 'gomoku_zero_9_plus_pro_max'
 batch_size = 256
 threshold=0.2
-itermax=200
+alpha = 2.0
+itermax=400
 
 if board_size == 15:
     steps=200000
@@ -35,11 +36,11 @@ if board_size == 15:
     games_per_worker = self_play_num // cpus
     num_workers = cpus
 elif board_size == 9:
-    steps = 40000
-    buffer_size = 80000
-    self_play_per_steps = 20
+    steps = 200000
+    buffer_size = 200000
+    self_play_per_steps = 100
     self_play_num = 16
-    eval_steps = 100
+    eval_steps = 1000
     games_per_worker = self_play_num // cpus
     num_workers = cpus
 
@@ -143,7 +144,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         log_probs = F.log_softmax(logits, dim=-1)
         cse = -torch.sum(probs * log_probs, dim=1).mean() # 先在每个样本上求和，再在batch上求平均
 
-        loss = (mse + cse) #/ batch_size
+        loss = (alpha * mse + cse) #/ batch_size
         loss.backward()
         optimizor.step()
         scheduler.step()

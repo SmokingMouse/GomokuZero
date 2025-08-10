@@ -80,7 +80,7 @@ class IneffectiveZeroMCTSPlayer(Player):
             temperature = 1.0 if num_moves < 10 else 0.0
 
         # 使用带温度的采样来选择最终动作
-        action, probs_for_training = mcts.select_action_with_temperature(temperature)
+        action, probs_for_training = mcts.select_action_with_temperature(temperature, 7)
 
         game.step(action)
 
@@ -151,10 +151,12 @@ class ZeroMCTSPlayer(Player):
 
         eager = kwargs.get('eager', False)
 
+        temperature_moves = kwargs.get('temperature_moves', 10)
+
         if eager:
             temperature = 0.0
         else:
-            temperature = 1.0 if num_moves < 30 else 0.0
+            temperature = 1.0 if num_moves < temperature_moves else 0.0
 
         # 使用带温度的采样来选择最终动作
         action, probs_for_training = mcts.select_action_with_temperature(temperature)
