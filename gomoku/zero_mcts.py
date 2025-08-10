@@ -167,26 +167,36 @@ class ZeroMCTS:
             return random.choice(root.env.get_valid_actions())
         return max(root.children.items(), key=lambda item: item[1].visits)[0]
     
-    def select_action_with_temperature(self, temperature=1.0):
+    def select_action_with_temperature(self, temperature=1.0, top_k = None):
         if not self.root.children:
             # 如果没有子节点，随机选一个（虽然不太可能发生）
             return random.choice(self.root.env.get_valid_actions()), {}
-    
-        visit_counts = np.array([child.visits for child in self.root.children.values()])
-        actions = list(self.root.children.keys())
+
+        child_visits = sorted(
+            [(action, child, child.visits) for action, child in self.root.children.items()],
+            key = lambda x: x[2], 
+            reverse=True,
+        )
     
         if temperature == 0:
             # 零温度等同于取最大值
-            action_index = np.argmax(visit_counts)
-            chosen_action = actions[action_index]
+            action = max(child_visits, key=lambda x: x[2])[0]
         else:
             # 根据温度调整概率分布
+            if top_k is not None:
+                if top_k > len(child_visits):
+                    top_k = len(child_visits)
+                child_visits = child_visits[:top_k]
+            
+            visit_counts = np.array([visit[2] for visit in child_visits])
             visit_probs = visit_counts**(1 / temperature)
-            visit_probs /= np.sum(visit_probs) # 归一化
+            if np.sum(visit_probs) == 0:
+                visit_probs = np.ones_like(visit_probs)
+            visit_probs /= np.sum(visit_probs)  # 归一化
             
             # 从分布中采样
-            action_index = np.random.choice(len(actions), p=visit_probs)
-            chosen_action = actions[action_index]
+            action_index = np.random.choice(len(visit_counts), p=visit_probs)
+            action = child_visits[action_index][0]
             
         # 同时，我们需要为训练准备 π (pi) 向量
         # π 是不加温度的、归一化的访问次数，代表了MCTS的“思考结果”
@@ -195,7 +205,7 @@ class ZeroMCTS:
         total_visits = total_visits if total_visits > 0 else 1  # 防止除以零
         probs_for_training = [pi_distribution.get(i, 0) / total_visits for i in range(self.root.env.board_size**2)]
     
-        return chosen_action, probs_for_training
+        return action, probs_for_training
 
     
 #%%

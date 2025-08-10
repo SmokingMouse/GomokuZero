@@ -10,7 +10,7 @@ from gomoku.policy import ZeroPolicy
 from gomoku.zero_mcts import ZeroMCTS
 
 # --- 常量定义 (保持不变) ---
-BOARD_SIZE = 15
+BOARD_SIZE = 9
 SQUARE_SIZE = 40
 MARGIN = 40
 WIDTH = HEIGHT = SQUARE_SIZE * (BOARD_SIZE - 1) + MARGIN * 2
@@ -32,7 +32,7 @@ class GameGUI:
         # --- AI 设置 ---
         self.ai_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
         # 请务必取消这行注释并加载你的模型!
-        # self.ai_policy.load_state_dict(torch.load('models/gomoku_zero_15/policy_step_latest.pth', map_location='cpu'))
+        self.ai_policy.load_state_dict(torch.load('models/gomoku_zero_9_plus_pro/policy_step_199500.pth', map_location='cpu'))
         self.ai_policy.eval()
         
         # --- [优化2] 统一的 MCTS 实例 ---
@@ -48,8 +48,13 @@ class GameGUI:
         # --- [优化3] 预渲染 Surface ---
         self.prob_square_surface = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
 
+        # --- [新] 添加胜率图和总模拟次数变量 ---
+        self.win_rate_map = np.zeros((BOARD_SIZE, BOARD_SIZE))
+        self.total_simulations = 0
+
         self.game_over = False
         self.font = pygame.font.Font(None, 42)
+        self.small_font = pygame.font.Font(None, 18)
 
     def draw_board(self):
         # ... (此函数保持不变) ...
@@ -90,34 +95,74 @@ class GameGUI:
                     self.screen.blit(self.prob_square_surface, (MARGIN + (c-0.5) * SQUARE_SIZE, MARGIN + (r-0.5) * SQUARE_SIZE))
     
     def display_message(self, message):
-        # ... (此函数保持不变) ...
-        text = self.font.render(message, True, BLACK, (230,220,200)) # slightly different bg for better reading
+        with self.prob_map_lock:
+            sims = self.total_simulations
+        
+        full_message = f"{message} (Sims: {sims})"
+
+        text = self.font.render(full_message, True, BLACK, (230,220,200)) # slightly different bg for better reading
         text_rect = text.get_rect(center=(WIDTH // 2, MARGIN // 2))
         self.screen.blit(text, text_rect)
 
-
     def _background_search_loop(self):
-        """后台持续运行 MCTS，并周期性更新概率图"""
+        """后台持续运行 MCTS，并周期性更新概率图和胜率图"""
         print("Background search thread started.")
         last_update_time = 0
         while self.searching:
-            # 持续不断地进行小批量搜索，充分利用CPU
             self.mcts.run(iterations=50) 
             
             current_time = time.time()
-            # 每 0.2 秒更新一次UI的概率图
             if current_time - last_update_time > 0.2:
                 last_update_time = current_time
+                
+                # --- [修改] 提取更多数据 ---
                 visits = np.zeros(self.env.board_size**2)
+                q_values = np.zeros(self.env.board_size**2) # 用来存储每个动作的Q值
+                
                 if self.mcts.root:
                     for action, node in self.mcts.root.children.items():
                         visits[action] = node.visits
+                        # 注意：q_value 是从当前玩家视角的价值。
+                        # MCTS内部的q_value是(-1, 1)范围，我们将其转换为(0, 1)的胜率。
+                        q_values[action] = (node.q_value + 1) / 2.0
                 
-                if np.sum(visits) > 0:
-                    probs = visits / np.sum(visits)
+                total_visits = np.sum(visits)
+                
+                if total_visits > 0:
+                    probs = visits / total_visits
+                    # --- [修改] 加锁并更新所有共享数据 ---
                     with self.prob_map_lock:
                         self.prob_map = probs.reshape(self.env.board_size, self.env.board_size)
+                        self.win_rate_map = q_values.reshape(self.env.board_size, self.env.board_size)
+                        # self.mcts.root.visits 包含了根节点被访问的总次数，即总模拟次数
+                        self.total_simulations = self.mcts.root.visits 
+                
         print("Background search thread stopped.")
+
+    def draw_win_rates(self):
+        """在棋盘上绘制每个候选点的胜率"""
+        with self.prob_map_lock:
+            # 创建一个副本以避免在渲染时数据被修改
+            current_win_rate_map = self.win_rate_map.copy()
+
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                # 只显示有意义的胜率 (例如，概率大于1%的点)
+                if self.prob_map[r, c] > 0.01:
+                    win_rate = current_win_rate_map[r, c]
+                    
+                    # 根据胜率决定文本颜色，提高可读性
+                    # 胜率高 -> 白色文本 (因为热力图背景是红色)
+                    # 胜率低 -> 黑色文本
+                    text_color = WHITE if win_rate > 0.6 else BLACK
+                    
+                    # 格式化文本为百分比
+                    text_surface = self.small_font.render(f"{win_rate:.0%}", True, text_color)
+                    
+                    # 计算文本位置，使其居中于格子
+                    text_rect = text_surface.get_rect(center=(MARGIN + c * SQUARE_SIZE, MARGIN + r * SQUARE_SIZE))
+                    
+                    self.screen.blit(text_surface, text_rect)
 
     def start_background_search(self):
         if not self.searching:
@@ -133,6 +178,8 @@ class GameGUI:
                 self.search_thread.join(timeout=0.5) # 等待线程结束
             with self.prob_map_lock:
                 self.prob_map.fill(0)
+                self.win_rate_map.fill(1)
+                self.total_simulations = 0
 
     def handle_human_move(self, pos):
         if self.game_over or self.env.current_player != self.human_player:
@@ -198,6 +245,7 @@ class GameGUI:
             self.draw_board()
             self.draw_prob_heatmap()
             self.draw_pieces()
+            self.draw_win_rates() 
             
             if self.game_over:
                 winner_map = {1: "Black", 2: "White", 0: "Draw"}
