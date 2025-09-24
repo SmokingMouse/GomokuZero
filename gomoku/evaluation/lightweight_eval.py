@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""
+轻量级模型评估
+评估关键训练节点的模型性能
+"""
+
+import torch
+from gomoku.gomoku_env import GomokuEnv
+from gomoku.zero_mcts import ZeroMCTS
+from gomoku.mcts import MCTS, RandomStrategy
+from gomoku.policy import ZeroPolicy
+import time
+import os
+
+def lightweight_evaluate_model(model_path, num_games=10, zero_iterations=100, mcts_iterations=400):
+    """轻量级评估单个模型"""
+    print(f"评估：{os.path.basename(model_path)}", end="")
+    
+    # 加载模型
+    policy = ZeroPolicy(board_size=9).to('cpu')
+    try:
+        policy.load_state_dict(torch.load(model_path, map_location='cpu'))
+        policy.eval()
+    except Exception as e:
+        print(f" - 模型加载失败：{e}")
+        return None
+    
+    zero_wins = 0
+    total_time = 0
+    
+    for game in range(num_games):
+        env = GomokuEnv(board_size=9)
+        zero_player = ZeroMCTS(env.clone(), policy, device='cpu')
+        mcts_player = MCTS(env.clone(), strategy=RandomStrategy(), c=1.41)
+        
+        zero_first = (game % 2 == 0)
+        current_player = "zero" if zero_first else "mcts"
+        players = {"zero": zero_player, "mcts": mcts_player}
+        
+        move_count = 0
+        start_time = time.time()
+        
+        while not env._is_terminal() and move_count < 81:
+            player = players[current_player]
+            if current_player == "zero":
+                player.run(iterations=zero_iterations, use_dirichlet=False)
+                action, _ = player.select_action_with_temperature(temperature=0, top_k=5)
+            else:
+                action = player.run(iterations=mcts_iterations)
+            
+            if action is None:
+                break
+                
+            env.step(action)
+            zero_player.update_root(action)
+            
+            current_player = "mcts" if current_player == "zero" else "zero"
+            move_count += 1
+        
+        end_time = time.time()
+        total_time += (end_time - start_time)
+        
+        # 判断结果
+        winner = env.winner
+        zero_won = (winner == 1 and zero_first) or (winner == 2 and not zero_first)
+        
+        if winner != 0 and zero_won:
+            zero_wins += 1
+    
+    win_rate = zero_wins / num_games
+    avg_time = total_time / num_games
+    
+    print(f" - 胜率 {win_rate:.1%} ({zero_wins}/{num_games}) - {avg_time:.2f}秒/局")
+    
+    return {
+        'model': os.path.basename(model_path),
+        'win_rate': win_rate,
+        'wins': zero_wins,
+        'avg_time': avg_time
+    }
+
+def lightweight_batch_eval():
+    """轻量级批量评估关键模型"""
+    print("轻量级批量模型评估")
+    print("=" * 50)
+    
+    # 选择关键评估点 - 每2万步一个
+    key_models = [
+        'models/gomoku_zero_9_plus_pro_max/policy_step_20000.pth',   # 2万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_40000.pth',   # 4万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_60000.pth',   # 6万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_80000.pth',   # 8万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_100000.pth',  # 10万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_120000.pth',  # 12万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_140000.pth',  # 14万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_160000.pth',  # 16万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_180000.pth',  # 18万步
+        'models/gomoku_zero_9_plus_pro_max/policy_step_199000.pth',  # 19.9万步
+    ]
+    
+    # 过滤存在的模型
+    available_models = [path for path in key_models if os.path.exists(path)]
+    
+    if not available_models:
+        print("未找到任何模型文件")
+        return
+    
+    print(f"找到{len(available_models)}个模型，每模型评估10局")
+    print("-" * 50)
+    
+    results = []
+    total_start = time.time()
+    
+    for i, model_path in enumerate(available_models):
+        result = lightweight_evaluate_model(model_path, num_games=10)
+        if result:
+            results.append(result)
+    
+    total_end = time.time()
+    
+    # 显示结果
+    print(f"\n{'='*50}")
+    print("评估完成！")
+    print(f"总用时：{(total_end - total_start)/60:.1f}分钟")
+    print(f"{'='*50}")
+    
+    print("\n模型性能对比：")
+    print("-" * 50)
+    print(f"{'训练步数':<12} {'胜率':<8} {'胜场':<8} {'平均用时'}")
+    print("-" * 50)
+    
+    for result in results:
+        step = result['model'].split('step_')[1].split('.pth')[0]
+        print(f"{step:<12} {result['win_rate']:.1%}{'':<4} {result['wins']:<8} {result['avg_time']:.2f}秒")
+    
+    # 找出最佳模型
+    if results:
+        best_model = max(results, key=lambda x: x['win_rate'])
+        best_step = best_model['model'].split('step_')[1].split('.pth')[0]
+        
+        print(f"\n🏆 最佳模型：Step {best_step}")
+        print(f"   胜率：{best_model['win_rate']:.1%}")
+        
+        # 简单的趋势分析
+        win_rates = [r['win_rate'] for r in results]
+        steps = [int(r['model'].split('step_')[1].split('.pth')[0]) for r in results]
+        
+        if len(win_rates) >= 3:
+            # 计算相关性
+            correlation = np.corrcoef(steps, win_rates)[0, 1]
+            
+            print(f"\n📈 训练趋势（相关系数：{correlation:.3f}）：")
+            if correlation > 0.3:
+                print("   ✅ 模型性能随训练显著提升")
+            elif correlation > 0.1:
+                print("   👍 模型性能随训练有所提升")
+            elif correlation > -0.1:
+                print("   🤔 模型性能基本稳定")
+            else:
+                print("   ⚠️ 模型性能随训练下降")
+    
+    return results
+
+if __name__ == "__main__":
+    lightweight_batch_eval()
