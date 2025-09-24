@@ -62,9 +62,14 @@ class ZeroMCTS:
             new_env.step(action)
             self.root = ZeroTreeNode(new_env)
     
-    def run(self, iterations):
-        """Run MCTS with PUCT using the policy network"""
-        if self.dirichlet_alpha > 0:
+    def run(self, iterations, use_dirichlet=True):
+        """Run MCTS with PUCT using the policy network
+        
+        Args:
+            iterations: MCTS迭代次数
+            use_dirichlet: 是否使用Dirichlet噪声（多样性策略）
+        """
+        if use_dirichlet and self.dirichlet_alpha > 0:
             self._apply_dirichlet_noise_to_root()
         
         for _ in range(iterations):
