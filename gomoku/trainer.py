@@ -17,11 +17,11 @@ import ray
 board_size = 9
 lr = 5e-4
 save_per_steps = 500
-cpus = 16
+cpus = 8
 device = 'cuda'
 seed=42
 
-lab_name = 'gomoku_zero_9_plus_pro_max'
+lab_name = 'gomoku_zero_9_pre'
 batch_size = 256
 threshold=0.2
 alpha = 2.0
@@ -47,9 +47,9 @@ if board_size == 15:
     num_workers = cpus
 elif board_size == 9:
     steps = 200000
-    buffer_size = 200000
-    self_play_per_steps = 100
-    self_play_num = 16
+    buffer_size = 100000
+    self_play_per_steps = 250
+    self_play_num = 32
     eval_steps = 1000
     games_per_worker = self_play_num // cpus
     num_workers = cpus
@@ -73,10 +73,23 @@ elif board_size == 9:
 
 def train(policy: ZeroPolicy, optimizor, replay_buffer):
     writer = SummaryWriter(f'runs/{lab_name}')
-    ray.init(num_cpus=cpus)
+
+    exclude_list = [
+        ".git",          # 排除整个 .git 目录
+        "__pycache__",   # 排除 Python 缓存
+        "*.pyc",         # 排除编译后的 Python 文件
+        "*.o",           # 排除 C++ 编译的中间文件
+        ".idea",         # 排除 IDE 的配置文件
+        ".vscode",       # 排除 VSCode 的配置文件
+        "checkpoints/",  # 排除模型权重文件目录 (如果很大)
+        "runs/",         # 排除 TensorBoard 日志目录
+        ".venv/"         # 排除虚拟环境目录
+    ]
+
+    ray.init(num_cpus=cpus, runtime_env={"excludes": exclude_list})
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
-    # scheduler = CosineAnnealingLR(optimizor, T_max=steps//2, eta_min=5e-5)
-    scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
+    scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=5e-5)
+    # scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
 
     best_policy = ZeroPolicy(board_size=board_size)
     best_policy.load_state_dict(policy.state_dict())

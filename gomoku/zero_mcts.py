@@ -39,7 +39,7 @@ class ZeroTreeNode:
 
 class ZeroMCTS:
     def __init__(self, env: GomokuEnv, policy: ZeroPolicy, 
-                puct=5, 
+                puct=2, 
                 device='cpu',
                 dirichlet_alpha = 0.3,
                 dirichlet_epsilon=0.25):

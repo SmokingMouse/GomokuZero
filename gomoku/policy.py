@@ -23,7 +23,7 @@ class ResBlock(nn.Module):
         return out
 
 class ZeroPolicy(nn.Module):
-    def __init__(self, board_size, num_blocks = 4):
+    def __init__(self, board_size, num_blocks = 2):
         super(ZeroPolicy, self).__init__()
         self.board_size = board_size
         self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action
