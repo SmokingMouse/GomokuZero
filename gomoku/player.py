@@ -151,7 +151,7 @@ class ZeroMCTSPlayer(Player):
 
         eager = kwargs.get('eager', False)
 
-        temperature_moves = kwargs.get('temperature_moves', 10)
+        temperature_moves = kwargs.get('temperature_moves', 15)
 
         if eager:
             temperature = 0.0
