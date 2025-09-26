@@ -69,7 +69,7 @@ class ZeroMCTS:
             iterations: MCTS迭代次数
             use_dirichlet: 是否使用Dirichlet噪声（多样性策略）
         """
-        if use_dirichlet and self.dirichlet_alpha > 0:
+        if use_dirichlet and self.dirichlet_alpha > 0 and self.env.move_size <= 0:
             self._apply_dirichlet_noise_to_root()
         
         for _ in range(iterations):
@@ -79,6 +79,7 @@ class ZeroMCTS:
         return self._best_action(self.root)
     
     def _apply_dirichlet_noise_to_root(self):
+        # print("Applying Dirichlet noise to root")
         """为根节点的策略概率添加噪声"""
         if self.root.action_prob is None:
             # 如果根节点还没有被评估过，先评估一次

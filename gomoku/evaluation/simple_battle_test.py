@@ -17,7 +17,8 @@ def simple_battle(num_games=5, iterations=100):
     print("MCTS+Model vs 普通MCTS 快速测试")
     print("-" * 40)
     
-    model_path = 'models/gomoku_zero_9_plus_pro_max/policy_step_199000.pth'
+    # model_path = 'models/gomoku_zero_9_plus_pro_max/policy_step_199000.pth'
+    model_path = 'models/gomoku_zero_9_pre/policy_step_50000.pth'
     
     # 加载模型
     policy = ZeroPolicy(board_size=9).to('cpu')

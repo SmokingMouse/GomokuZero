@@ -92,11 +92,12 @@ def quick_batch_eval():
     
     # 选择关键评估点
     key_models = [f'../{elem}' for elem in [
-        'models/gomoku_zero_9_plus_pro_max/policy_step_10000.pth',   # 1万步
-        'models/gomoku_zero_9_plus_pro_max/policy_step_50000.pth',   # 5万步
-        'models/gomoku_zero_9_plus_pro_max/policy_step_100000.pth',  # 10万步
-        'models/gomoku_zero_9_plus_pro_max/policy_step_150000.pth',  # 15万步
-        'models/gomoku_zero_9_plus_pro_max/policy_step_199000.pth',  # 19.9万步
+        "models/gomoku_zero_9_pre/policy_step_50000.pth",   # 1万步
+        # 'models/gomoku_zero_9_plus_pro_max/policy_step_10000.pth',   # 1万步
+        # 'models/gomoku_zero_9_plus_pro_max/policy_step_50000.pth',   # 5万步
+        # 'models/gomoku_zero_9_plus_pro_max/policy_step_100000.pth',  # 10万步
+        # 'models/gomoku_zero_9_plus_pro_max/policy_step_150000.pth',  # 15万步
+        # 'models/gomoku_zero_9_plus_pro_max/policy_step_199000.pth',  # 19.9万步
     ]]
     print(key_models)
     
