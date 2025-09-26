@@ -16,12 +16,12 @@ import ray
 
 board_size = 9
 lr = 5e-4
-save_per_steps = 500
-cpus = 8
+save_per_steps = 10000
+cpus = 16
 device = 'cuda'
 seed=42
 
-lab_name = 'gomoku_zero_9_pre'
+lab_name = 'gomoku_zero_9_pre2'
 batch_size = 256
 threshold=0.2
 alpha = 2.0
@@ -46,7 +46,7 @@ if board_size == 15:
     games_per_worker = self_play_num // cpus
     num_workers = cpus
 elif board_size == 9:
-    steps = 200000
+    steps = 1000000
     buffer_size = 100000
     self_play_per_steps = 250
     self_play_num = 32
