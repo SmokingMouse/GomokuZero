@@ -59,7 +59,7 @@ class GomokuBattleGUI:
 
         # AI设置
         self.zero_iterations = 400
-        self.ai_iterations = 1000
+        self.ai_iterations = 4000
         self.ai_temperature = 0.1
         self.device = 'cpu'
 
@@ -67,7 +67,7 @@ class GomokuBattleGUI:
         self._init_ai_players()
 
         # 人类玩家设置
-        self.human_player = 1  # 默认人类执黑
+        self.human_player = 2  # 默认人类执黑
 
         # 后台搜索
         self.searching = False
@@ -82,7 +82,7 @@ class GomokuBattleGUI:
         # ZeroMCTS AI (使用神经网络)
         try:
             self.zero_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2).to(self.device)
-            self.zero_policy.load_state_dict(torch.load('models/gomoku_zero_9_pre2/policy_step_150000.pth', map_location=self.device))
+            self.zero_policy.load_state_dict(torch.load('models/gomoku_zero_9_pre2/policy_step_660000.pth', map_location=self.device))
             self.zero_policy.eval()
             self.zero_mcts_player = ZeroMCTS(self.env.clone(), self.zero_policy, device=self.device)
         except Exception as e:
@@ -215,6 +215,7 @@ class GomokuBattleGUI:
         """执行一步棋，并只切换玩家和检查游戏结束"""
         # [简化] 这个函数现在非常纯粹
         self.env.step(action)
+        self.zero_mcts_player.update_root(action)
         
         # 检查游戏结束
         if self.env._is_terminal():
@@ -255,6 +256,7 @@ class GomokuBattleGUI:
                 else:
                     # 白棋使用纯MCTS
                     action = self.pure_mcts_player.run(self.ai_iterations)
+                    self.zero_mcts_player.update_root(action)
 
             # 延迟一下让AI思考更真实
             time.sleep(0.5)
