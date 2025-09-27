@@ -32,7 +32,7 @@ class GameGUI:
         # --- AI 设置 ---
         self.ai_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
         # 请务必取消这行注释并加载你的模型!
-        self.ai_policy.load_state_dict(torch.load('models/gomoku_zero_9_plus_pro/policy_step_199500.pth', map_location='cpu'))
+        self.ai_policy.load_state_dict(torch.load('models/gomoku_zero_9_pre2/policy_step_530000.pth', map_location='cpu'))
         self.ai_policy.eval()
         
         # --- [优化2] 统一的 MCTS 实例 ---
