@@ -36,7 +36,7 @@ class GameGUI:
         self.ai_policy.eval()
 
         self.helper_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
-        self.helper_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location='cpu'))
+        self.helper_policy.load_state_dict(torch.load('continue_model/policy_step_900000.pth', map_location='cpu'))
         self.helper_policy.eval()
         
         # --- [优化2] 统一的 MCTS 实例 ---
