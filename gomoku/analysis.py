@@ -32,11 +32,11 @@ class GameGUI:
         # --- AI 设置 ---
         self.ai_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2).to('cpu')
         # 请务必取消这行注释并加载你的模型!
-        self.ai_policy.load_state_dict(torch.load('continue_model/policy_step_350000.pth', map_location='cpu'))
+        self.ai_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location='cpu'))
         self.ai_policy.eval()
 
         self.helper_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
-        self.helper_policy.load_state_dict(torch.load('continue_model/policy_step_900000.pth', map_location='cpu'))
+        self.helper_policy.load_state_dict(torch.load('continue_model/policy_step_940000.pth', map_location='cpu'))
         self.helper_policy.eval()
         
         # --- [优化2] 统一的 MCTS 实例 ---
@@ -273,8 +273,8 @@ class GameGUI:
 
 if __name__ == "__main__":
     # 你可以选择执黑或执白
-    human_color = 'black' 
-    # human_color = 'white' 
+    # human_color = 'black' 
+    human_color = 'white' 
 
     game = GameGUI(human_player_color=human_color)
     game.run()
