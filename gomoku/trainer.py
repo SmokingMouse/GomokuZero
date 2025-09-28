@@ -29,10 +29,10 @@ itermax=400
 
 # batch_size = 256 # 一个 step 的训练样本
 # itermax=400 # MCTS 最大迭代次数
-# steps = 200000 # 总的训练 step
-# buffer_size = 200000 # replay buffer 大小
-# self_play_per_steps = 100 # 每隔多少 step 进行 self-play 生成样本
-# self_play_num = 16 # 每次 self-play 生成多少对局
+# steps = 1000000 # 总的训练 step
+# buffer_size = 100000 # replay buffer 大小
+# self_play_per_steps = 250 # 每隔多少 step 进行 self-play 生成样本
+# self_play_num = 32 # 每次 self-play 生成多少对局
 # eval_steps = 1000 # 每隔多少 step 进行一次评测
 # games_per_worker = self_play_num // cpus # 每个 worker 负责多少对局
 # num_workers = cpus # worker 数量
