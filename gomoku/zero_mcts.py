@@ -38,45 +38,63 @@ class ZeroTreeNode:
     
 
 class ZeroMCTS:
-    def __init__(self, env: GomokuEnv, policy: ZeroPolicy, 
+    def __init__(self, policy: ZeroPolicy, 
                 puct=2, 
                 device='cpu',
                 dirichlet_alpha = 0.3,
                 dirichlet_epsilon=0.25):
         # Policy is evaluation network.
-        self.env = env
+        # self.env = env
         self.policy = policy
         self.puct = puct 
-        self.root = ZeroTreeNode(env.clone())
+        # self.root = ZeroTreeNode(env.clone())
         self.device = device
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
+        # self.env2node = {self.hash(env): self.root}
+        self.env2node = {}
     
-    def update_root(self, action):
-        """After taking action, update the root to the corresponding child node."""
-        if action in self.root.children:
-            self.root = self.root.children[action]
-            self.root.parent = None
-        else:
-            new_env = self.root.env.clone()
-            new_env.step(action)
-            self.root = ZeroTreeNode(new_env)
+    # def update_root(self, action):
+    #     """After taking action, update the root to the corresponding child node."""
+    #     if action in self.root.children:
+    #         self.root = self.root.children[action]
+    #         self.root.parent = None
+    #     else:
+    #         new_env = self.root.env.clone()
+    #         new_env.step(action)
+    #         self.root = ZeroTreeNode(new_env)
     
-    def run(self, iterations, use_dirichlet=True):
+    def hash(self, env: GomokuEnv): 
+        return env.board.tobytes()
+    
+    def find_root(self, env): 
+        return self.env2node.get(self.hash(env), None)
+    
+    def run(self, env, iterations, use_dirichlet=True):
         """Run MCTS with PUCT using the policy network
         
         Args:
             iterations: MCTS迭代次数
             use_dirichlet: 是否使用Dirichlet噪声（多样性策略）
         """
-        if use_dirichlet and self.dirichlet_alpha > 0 and self.env.move_size <= 0:
+        hash_key = self.hash(env)
+        # print(hash_key)
+        if hash_key not in self.env2node: 
+            self.env2node[hash_key] = ZeroTreeNode(env.clone())
+        self.root = self.env2node[hash_key]
+        self.root.parent = None
+
+        # print(self.root.)
+        # print(self.root.__dict__)
+
+        if use_dirichlet and self.dirichlet_alpha > 0 and self.root.env.move_size <= 0:
             self._apply_dirichlet_noise_to_root()
         
         for _ in range(iterations):
             leaf_node = self._select(self.root)
             value = self._expand_and_evaluate(leaf_node)
             self._backpropagation(leaf_node, value)
-        return self._best_action(self.root)
+        return self._best_action()
     
     def _apply_dirichlet_noise_to_root(self):
         # print("Applying Dirichlet noise to root")
@@ -147,7 +165,9 @@ class ZeroMCTS:
             if action not in node.children:
                 child_env = node.env.clone()
                 child_env.step(action)
-                node.add_child(action, ZeroTreeNode(child_env, parent=node, prior_prob=policy_probs[action]))
+                child_node = ZeroTreeNode(child_env, parent=node, prior_prob=policy_probs[action])
+                node.add_child(action, child_node)
+                self.env2node[self.hash(child_env)] = child_node
 
         return value
     
@@ -167,11 +187,9 @@ class ZeroMCTS:
         
         return q_value + exploration_term
     
-    def _best_action(self, root: ZeroTreeNode):
+    def _best_action(self):
         """Return the best action based on visit count"""
-        if not root.children:
-            return random.choice(root.env.get_valid_actions())
-        return max(root.children.items(), key=lambda item: item[1].visits)[0]
+        return self.select_action_with_temperature(temperature=0, top_k=1)
     
     def select_action_with_temperature(self, temperature=1.0, top_k = None):
         if not self.root.children:

@@ -17,7 +17,7 @@ import ray
 board_size = 9
 lr = 5e-4
 save_per_steps = 10000
-cpus = 16
+cpus = 8
 device = 'cuda'
 seed=42
 
@@ -25,7 +25,7 @@ lab_name = 'gomoku_zero_9_pre2'
 batch_size = 256
 threshold=0.2
 alpha = 2.0
-itermax=400
+itermax=100
 
 # batch_size = 256 # 一个 step 的训练样本
 # itermax=400 # MCTS 最大迭代次数
@@ -139,8 +139,8 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             )
 
             win_rate = r['player1_win_rate']
+            best_policy.load_state_dict(policy.state_dict())
             if win_rate >= 0.55:
-                best_policy.load_state_dict(policy.state_dict())
                 update_count += 1
             
             writer.add_scalar('Train/win-rate', win_rate, step)

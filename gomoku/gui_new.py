@@ -32,7 +32,7 @@ class GomokuBattleGUI:
             # 定义一个包含多个中文字体名称的列表，按优先级排序
             # 'WenQuanYi Zen Hei' 是在 Ubuntu/WSL 中安装的字体
             # 'Microsoft YaHei UI' 等作为在 Windows 原生环境运行时的备选
-            font_names = "WenQuanYi Zen Hei, Microsoft YaHei UI, SimHei, SimSun"
+            font_names = "WenQuanYi Zen Hei, Microsoft YaHei UI, SimHei, SimSun, PingFang SC"
             
             print(f"尝试从系统字体库加载: {font_names}")
             
@@ -82,9 +82,9 @@ class GomokuBattleGUI:
         # ZeroMCTS AI (使用神经网络)
         try:
             self.zero_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2).to(self.device)
-            self.zero_policy.load_state_dict(torch.load('models/gomoku_zero_9_pre2/policy_step_660000.pth', map_location=self.device))
+            self.zero_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location=self.device))
             self.zero_policy.eval()
-            self.zero_mcts_player = ZeroMCTS(self.env.clone(), self.zero_policy, device=self.device)
+            self.zero_mcts_player = ZeroMCTS(self.zero_policy, device=self.device)
         except Exception as e:
             print(f"Warning: Could not load ZeroMCTS model ({e}), using pure MCTS instead")
             self.zero_mcts_player = None
@@ -215,7 +215,7 @@ class GomokuBattleGUI:
         """执行一步棋，并只切换玩家和检查游戏结束"""
         # [简化] 这个函数现在非常纯粹
         self.env.step(action)
-        self.zero_mcts_player.update_root(action)
+        # self.zero_mcts_player.update_root(action)
         
         # 检查游戏结束
         if self.env._is_terminal():
@@ -238,8 +238,8 @@ class GomokuBattleGUI:
             if self.game_mode == "human_vs_ai":
                 # 人类 vs AI 模式，使用ZeroMCTS
                 if self.zero_mcts_player:
-                    action = self.zero_mcts_player.run(self.zero_iterations, use_dirichlet=False)
-                    self.zero_mcts_player.update_root(action)
+                    action, _ = self.zero_mcts_player.run(self.env, self.zero_iterations, use_dirichlet=False)
+                    # self.zero_mcts_player.update_root(action)
                 else:
                     # 回退到纯MCTS
                     action = self.pure_mcts_player.run(self.ai_iterations)
@@ -249,14 +249,14 @@ class GomokuBattleGUI:
                 if self.current_player == 1:
                     # 黑棋使用ZeroMCTS
                     if self.zero_mcts_player:
-                        action = self.zero_mcts_player.run(self.zero_iterations, use_dirichlet=False)
-                        self.zero_mcts_player.update_root(action)
+                        action, _ = self.zero_mcts_player.run(self.env, self.zero_iterations, use_dirichlet=False)
+                        # self.zero_mcts_player.update_root(action)
                     else:
                         action = self.pure_mcts_player.run(self.ai_iterations)
                 else:
                     # 白棋使用纯MCTS
                     action = self.pure_mcts_player.run(self.ai_iterations)
-                    self.zero_mcts_player.update_root(action)
+                    # self.zero_mcts_player.update_root(action)
 
             # 延迟一下让AI思考更真实
             time.sleep(0.5)
@@ -279,7 +279,7 @@ class GomokuBattleGUI:
 
         # 重置AI状态
         if self.zero_mcts_player:
-            self.zero_mcts_player = ZeroMCTS(self.env.clone(), self.zero_policy, device=self.device)
+            self.zero_mcts_player = ZeroMCTS(self.zero_policy, device=self.device)
         self.pure_mcts_player = MCTS(self.env.clone(), RandomStrategy(), c=1.41)
 
     def show_settings_dialog(self):
