@@ -18,4 +18,5 @@ dependencies = [
     "torchinfo>=1.8.0",
     "streamlit>=1.50.0",
     "matplotlib>=3.10.6",
+    "graphviz>=0.21",
 ]
