@@ -30,14 +30,21 @@ class GameGUI:
         self.human_player = 1 if human_player_color == 'black' else 2
         
         # --- AI 设置 ---
-        self.ai_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
+        self.ai_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2).to('cpu')
         # 请务必取消这行注释并加载你的模型!
-        self.ai_policy.load_state_dict(torch.load('models/gomoku_zero_9_pre2/policy_step_530000.pth', map_location='cpu'))
+        self.ai_policy.load_state_dict(torch.load('continue_model/policy_step_350000.pth', map_location='cpu'))
         self.ai_policy.eval()
+
+        self.helper_policy = ZeroPolicy(board_size=BOARD_SIZE).to('cpu')
+        self.helper_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location='cpu'))
+        self.helper_policy.eval()
         
         # --- [优化2] 统一的 MCTS 实例 ---
         # AI 对手和后台搜索将共享这一个 MCTS 实例
-        self.mcts = ZeroMCTS(self.env.clone(), self.ai_policy, device='cpu')
+        self.mcts = ZeroMCTS(self.ai_policy, device='cpu')
+        self.analysis_mcts = ZeroMCTS(self.helper_policy, device='cpu')
+
+        # self.helper = ZeroMCTS(self.ai_policy, device='cpu')
 
         # --- 后台搜索线程设置 ---
         self.search_thread = None
@@ -109,7 +116,7 @@ class GameGUI:
         print("Background search thread started.")
         last_update_time = 0
         while self.searching:
-            self.mcts.run(iterations=50) 
+            self.analysis_mcts.run(self.env, iterations=200, use_dirichlet=False) 
             
             current_time = time.time()
             if current_time - last_update_time > 0.2:
@@ -119,12 +126,12 @@ class GameGUI:
                 visits = np.zeros(self.env.board_size**2)
                 q_values = np.zeros(self.env.board_size**2) # 用来存储每个动作的Q值
                 
-                if self.mcts.root:
-                    for action, node in self.mcts.root.children.items():
+                if self.analysis_mcts.root:
+                    for action, node in self.analysis_mcts.root.children.items():
                         visits[action] = node.visits
                         # 注意：q_value 是从当前玩家视角的价值。
                         # MCTS内部的q_value是(-1, 1)范围，我们将其转换为(0, 1)的胜率。
-                        q_values[action] = (node.q_value + 1) / 2.0
+                        q_values[action] = (-node.q_value + 1) / 2.0
                 
                 total_visits = np.sum(visits)
                 
@@ -135,7 +142,7 @@ class GameGUI:
                         self.prob_map = probs.reshape(self.env.board_size, self.env.board_size)
                         self.win_rate_map = q_values.reshape(self.env.board_size, self.env.board_size)
                         # self.mcts.root.visits 包含了根节点被访问的总次数，即总模拟次数
-                        self.total_simulations = self.mcts.root.visits 
+                        self.total_simulations = self.analysis_mcts.root.visits 
                 
         print("Background search thread stopped.")
 
@@ -195,7 +202,7 @@ class GameGUI:
 
                 self.env.step(action)
                 # [优化2] AI 直接继承人类思考的结果，只需推进树即可
-                self.mcts.update_root(action) 
+                # self.mcts.update_root(action) 
                 
                 self.check_game_over()
                 # AI 的回合将在主循环中被触发，而不是在这里直接调用
@@ -207,10 +214,11 @@ class GameGUI:
         
         # AI 使用固定次数进行搜索，这里我们直接从 MCTS 实例中获取最优动作
         # 因为后台线程可能已经为AI的这一步做了很多搜索
-        ai_action = self.mcts.select_action_with_temperature(temperature=0)[0]
+        # ai_action = self.mcts.select_action_with_temperature(temperature=0)[0]
+        ai_action, _ = self.mcts.run(self.env, 200, False)
         
         self.env.step(ai_action)
-        self.mcts.update_root(ai_action)
+        # self.mcts.update_root(ai_action)
         self.check_game_over()
         
         # 切换回人类回合，开始后台搜索

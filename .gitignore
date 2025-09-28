@@ -1,6 +1,7 @@
 gomoku/models/*
 gomoku/__pycache__/*
 gomoku/runs/*
+gomoku/notebook.ipynb
 
 
 *.egg-info
