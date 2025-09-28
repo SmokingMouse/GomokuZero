@@ -29,7 +29,7 @@ BTN_BORDER = (60, 60, 60)
 class ZeroPlayer():
     def __init__(self, iter = 200, use_dirichlet = False):
         zero_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2)
-        zero_policy.load_state_dict(torch.load('continue_model/policy_step_350000.pth', map_location=torch.device('cpu')))
+        zero_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location=torch.device('cpu')))
         zero_policy.eval()
         self.zero_mcts_player = ZeroMCTS(zero_policy)
         self.iter = iter
@@ -97,7 +97,7 @@ class GomokuBattleGUI:
 
         # AI设置
         self.zero_iterations = 400
-        self.ai_iterations = 40000
+        # self.ai_iterations = 40000
         self.pure_mcts_iterations = 1000  # 纯MCTS迭代次数配置
         self.device = 'cpu'
 
