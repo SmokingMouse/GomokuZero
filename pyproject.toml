@@ -16,4 +16,6 @@ dependencies = [
     "scikit-learn>=1.7.1",
     "pygame>=2.5.0",
     "torchinfo>=1.8.0",
+    "streamlit>=1.50.0",
+    "matplotlib>=3.10.6",
 ]

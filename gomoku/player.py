@@ -35,7 +35,7 @@ class Player:
         raise NotImplementedError("This method should be overridden by subclasses.")
 
 class MCTSPlayer(Player):
-    def __init__(self, game: GomokuEnv, itermax=200):
+    def __init__(self, itermax=200):
         super().__init__("MCTS Player")
         # self.game = game
         self.itermax = itermax
@@ -45,7 +45,7 @@ class MCTSPlayer(Player):
         mcts = MCTS(game) 
         action = mcts.run(self.itermax)
 
-        game.step(action)
+        # game.step(action)
         return {
             'action': action, 
             'probs': [], 
@@ -145,7 +145,7 @@ class ZeroMCTSPlayer(Player):
 
         if mcts is None or itermax is None:
             raise ValueError("MCTS instance and itermax must be provided in kwargs.")
-        mcts.run(itermax)
+        mcts.run(game, itermax)
 
         num_moves = game.move_size # 你需要一个方法来获取当前是第几步
 
@@ -205,8 +205,8 @@ def play_one_game(player1, player2, board_size: int,
     else:
         env = game
     
-    mcts1 = ZeroMCTS(env, player1.policy, device=player1.device)
-    mcts2 = ZeroMCTS(env, player2.policy, device=player2.device)
+    mcts1 = ZeroMCTS(player1.policy, device=player1.device)
+    mcts2 = ZeroMCTS(player2.policy, device=player2.device)
 
     while not env._is_terminal():
         infos = player1.play(env, **{
@@ -219,8 +219,8 @@ def play_one_game(player1, player2, board_size: int,
 
         action1 = infos['action']
         env.step(action1)
-        mcts1.update_root(action1)
-        mcts2.update_root(action1)
+        # mcts1.update_root(action1)
+        # mcts2.update_root(action1)
         if render:
             env.render()
         if env._is_terminal():
@@ -235,8 +235,8 @@ def play_one_game(player1, player2, board_size: int,
 
         action2 = infos['action']
         env.step(action2)
-        mcts1.update_root(action2)
-        mcts2.update_root(action2)
+        # mcts1.update_root(action2)
+        # mcts2.update_root(action2)
 
 
         if render:
