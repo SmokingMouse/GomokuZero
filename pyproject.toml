@@ -19,4 +19,7 @@ dependencies = [
     "streamlit>=1.50.0",
     "matplotlib>=3.10.6",
     "graphviz>=0.21",
+    "fastapi[standard]>=0.127.0",
+    "uvicorn>=0.40.0",
+    "websocket>=0.2.1",
 ]

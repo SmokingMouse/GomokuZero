@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: gomoku-zero-backend
+    env: python
+    plan: free
+    buildCommand: uv sync
+    startCommand: fastapi run gomoku/app.py --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GOMOKU_MODEL_PATH
+        value: gomoku/continue_model/policy_step_940000.pth
+      - key: GOMOKU_MCTS_ITERS
+        value: "400"
+      - key: GOMOKU_AI_WORKERS
+        value: "2"

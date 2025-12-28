@@ -273,8 +273,8 @@ class GameGUI:
 
 if __name__ == "__main__":
     # 你可以选择执黑或执白
-    # human_color = 'black' 
-    human_color = 'white' 
+    human_color = 'black' 
+    # human_color = 'white' 
 
     game = GameGUI(human_player_color=human_color)
     game.run()
