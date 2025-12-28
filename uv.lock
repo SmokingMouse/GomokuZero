@@ -621,6 +621,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
+    { name = "fastapi-cli" },
     { name = "graphviz" },
     { name = "gymnasium" },
     { name = "ipykernel" },
@@ -642,6 +643,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.127.0" },
+    { name = "fastapi-cli", specifier = ">=0.0.20" },
     { name = "graphviz", specifier = ">=0.21" },
     { name = "gymnasium", specifier = ">=0.28.0" },
     { name = "ipykernel", specifier = ">=6.30.0" },

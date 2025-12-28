@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 const DEFAULT_WS =
-  process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/play";
+  process.env.NEXT_PUBLIC_WS_URL ||
+  "wss://smokingmouse-gomokuzero.hf.space/ws/play";
 
 const makeEmptyBoard = (size) =>
   Array.from({ length: size }, () => Array.from({ length: size }, () => 0));

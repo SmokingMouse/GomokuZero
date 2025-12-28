@@ -2,7 +2,7 @@
 title: GomokuZero
 emoji: ♟️
 colorFrom: gray
-colorTo: black
+colorTo: red
 sdk: docker
 pinned: false
 app_port: 7860
