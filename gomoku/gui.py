@@ -98,7 +98,7 @@ class GomokuBattleGUI:
         # AI设置
         self.zero_iterations = 400
         # self.ai_iterations = 40000
-        self.pure_mcts_iterations = 1000  # 纯MCTS迭代次数配置
+        self.pure_mcts_iterations = 4000  # 纯MCTS迭代次数配置
         self.device = 'cpu'
 
         # AI状态管理
