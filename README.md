@@ -1,3 +1,14 @@
+---
+title: GomokuZero
+emoji: ♟️
+colorFrom: gray
+colorTo: black
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
+
 # GomokuZero
 
 ## TODO
