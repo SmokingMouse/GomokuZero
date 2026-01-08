@@ -1,11 +1,8 @@
 
 # %% 
-from email.policy import Policy
-import time
-import rich
-from tkinter import NO
 from gomoku.mcts import MCTS, WrongZeroMCTS
 from gomoku.zero_mcts import ZeroMCTS
+from gomoku.light_zero_mcts import LightZeroMCTS
 from gomoku.gomoku_env import GomokuEnv, GomokuEnvSimple
 from gomoku.policy import ZeroPolicy
 from gomoku.utils import timer
@@ -80,7 +77,7 @@ class IneffectiveZeroMCTSPlayer(Player):
             temperature = 1.0 if num_moves < 10 else 0.0
 
         # 使用带温度的采样来选择最终动作
-        action, probs_for_training = mcts.select_action_with_temperature(temperature, 7)
+        action, probs_for_training = mcts.select_action_with_temperature(temperature)
 
         game.step(action)
 
@@ -151,7 +148,7 @@ class ZeroMCTSPlayer(Player):
 
         eager = kwargs.get('eager', False)
 
-        temperature_moves = kwargs.get('temperature_moves', 15)
+        temperature_moves = kwargs.get('temperature_moves', 10)
 
         if eager:
             temperature = 0.0
@@ -185,8 +182,13 @@ def self_play(policy, device, board_size, itermax=200):
     player1 = ZeroMCTSPlayer(policy, device=device)
     player2 = ZeroMCTSPlayer(policy, device=device)
 
+    env = GomokuEnv(board_size)
+
+    # if random.random() > 0.8:
+    #     env.random_step(4, 2)
+
     winner, infos = play_one_game(
-        player1, player2, board_size=board_size,
+        player1, player2, board_size=board_size, game=env,
         itermax=itermax, eager=False
     )
     print(f"Game over! Winner: {winner}")
@@ -195,7 +197,7 @@ def self_play(policy, device, board_size, itermax=200):
 @timer
 def play_one_game(player1, player2, board_size: int, 
                   game: GomokuEnv = None,
-                  render=False, itermax=200, eager=False):
+                  render=False, itermax=200, eager=False, MCTS=LightZeroMCTS):
     states = []
     probs = []
     rewards = []
@@ -205,8 +207,8 @@ def play_one_game(player1, player2, board_size: int,
     else:
         env = game
     
-    mcts1 = ZeroMCTS(player1.policy, device=player1.device)
-    mcts2 = ZeroMCTS(player2.policy, device=player2.device)
+    mcts1 = MCTS(player1.policy, device=player1.device)
+    mcts2 = MCTS(player2.policy, device=player2.device)
 
     while not env._is_terminal():
         infos = player1.play(env, **{
@@ -219,6 +221,8 @@ def play_one_game(player1, player2, board_size: int,
 
         action1 = infos['action']
         env.step(action1)
+        mcts1.step(action1)
+        mcts2.step(action1)
         # mcts1.update_root(action1)
         # mcts2.update_root(action1)
         if render:
@@ -235,9 +239,8 @@ def play_one_game(player1, player2, board_size: int,
 
         action2 = infos['action']
         env.step(action2)
-        # mcts1.update_root(action2)
-        # mcts2.update_root(action2)
-
+        mcts1.step(action2)
+        mcts2.step(action2)
 
         if render:
             env.render()
@@ -283,12 +286,12 @@ class ArenaWorker:
             second_player, 
             board_size=self.board_size, 
             itermax=self.itermax, 
-            eager=self.eager 
+            eager=self.eager
         )
         return s
 
 @timer
-def arena_parallel(policy1, policy2, board_size, num_cpus, games=100, eager=False, itermax=200):
+def arena_parallel(policy1, policy2, board_size, num_cpus, games=100, eager=False, itermax=200, MCTS=ZeroMCTS):
     # 初始化 Ray
     if not ray.is_initialized():
         ray.init(num_cpus=num_cpus)

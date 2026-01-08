@@ -2,6 +2,10 @@ gomoku/models/*
 gomoku/__pycache__/*
 gomoku/runs/*
 gomoku/notebook.ipynb
+runs/*
+models/*
+train.log
+zero_mcts_rs/target_ra/*
 
 
 *.egg-info

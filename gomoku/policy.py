@@ -26,7 +26,7 @@ class ZeroPolicy(nn.Module):
     def __init__(self, board_size, num_blocks = 2):
         super(ZeroPolicy, self).__init__()
         self.board_size = board_size
-        self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action
+        self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action 4. Available action
         
         # Shared trunk - simple conv layers as in AlphaZero
         self.conv1 = nn.Conv2d(self.channel_size, 32, kernel_size=3, padding=1)

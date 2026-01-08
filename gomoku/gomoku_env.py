@@ -140,6 +140,12 @@ class GomokuEnv(gym.Env):
         if self.last_action != -1:
             last_action = self._action_to_position(self.last_action)
             last_action_state[last_action] = 1
+
+        # available_actions = np.zeros((self.board_size**2, ), dtype=np.int8)
+        # available_actions[self.get_valid_actions()] = 1
+        # available_actions = available_actions.reshape(
+        #     (self.board_size, self.board_size)
+        #     )
         
         if self.current_player == 2:
             return np.stack([player2_board, player1_board, last_action_state], axis=0)
@@ -201,6 +207,49 @@ class GomokuEnv(gym.Env):
         # new_env.move_history = self.move_history.copy()
         return new_env
 
+    def random_step(self, steps, center_margin=0): 
+        """
+        :param steps: 随机走的步数
+        :param center_margin: 边缘保留多少格不走。例如 15x15，margin=4，则只在中间 7x7 区域落子。
+        """
+        for _ in range(steps):
+            if self.done: break
+
+            valid_actions = []
+            
+            # 如果指定了 margin，只筛选中间区域的合法点
+            if center_margin > 0:
+                for row in range(center_margin, self.board_size - center_margin):
+                    for col in range(center_margin, self.board_size - center_margin):
+                        if self.board[row, col] == 0:
+                            valid_actions.append(self._position_to_action(row, col))
+            
+            # 如果中间满了或者没设置 margin，就取全盘合法点
+            if not valid_actions:
+                valid_actions = self.get_valid_actions()
+            
+            if not valid_actions:
+                self.done = True
+                break
+
+            action = np.random.choice(valid_actions)
+            
+            # --- 以下逻辑同上 (执行落子、更新状态、检查胜负) ---
+            row, col = self._action_to_position(action)
+            self.board[row, col] = self.current_player
+            self.move_size += 1
+            if self.enable_history:
+                self.move_history.append((row, col))
+            self.last_action = action
+            
+            if self._check_winner(row, col):
+                self.winner = self.current_player
+                self.done = True
+            elif self._is_board_full():
+                self.done = True
+            
+            if not self.done:
+                self.current_player = 3 - self.current_player
 
 class GomokuEnvSimple(GomokuEnv):
     """
@@ -213,18 +262,23 @@ class GomokuEnvSimple(GomokuEnv):
 
 # Example usage and testing
 if __name__ == "__main__":
-    env = GomokuEnv()
+    env = GomokuEnv(9)
     obs, info = env.reset()
     
     print("Gomoku Environment initialized!")
     print(f"Observation shape: {obs.shape}")
     print(f"Action space: {env.action_space}")
-    print(f"Initial valid actions: {len(info['valid_actions'])}")
+    # print(f"Initial valid actions: {len(info['valid_actions'])}")
     
     # Test a few moves
-    valid_actions = info['valid_actions']
-    if valid_actions:
-        action = valid_actions[0]
-        obs, reward, done, truncated, info = env.step(action)
-        print(f"Made move {action}, reward: {reward}")
-        env.render()
+    # valid_actions = info['valid_actions']
+    # if valid_actions:
+        # action = valid_actions[0]
+    # obs, reward, done, truncated, info = env.step(action)
+
+    # env.step(10)
+    env.random_step(3,2)
+    print(env._get_observation())
+
+    # print(f"Made move {action}, reward: {reward}")
+    # env.render()

@@ -23,4 +23,14 @@ dependencies = [
     "uvicorn>=0.40.0",
     "websocket>=0.2.1",
     "fastapi-cli>=0.0.20",
+    "maturin>=1.11.2",
+]
+
+[tool.setuptools]
+# 显式指定包名，只包含核心代码目录
+packages = ["gomoku"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.11.2",
 ]

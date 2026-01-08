@@ -63,6 +63,8 @@ class ZeroMCTS:
     #         new_env = self.root.env.clone()
     #         new_env.step(action)
     #         self.root = ZeroTreeNode(new_env)
+    def step(self, action):
+        pass
     
     def hash(self, env: GomokuEnv): 
         return env.board.tobytes()
@@ -87,7 +89,10 @@ class ZeroMCTS:
         # print(self.root.)
         # print(self.root.__dict__)
 
-        if use_dirichlet and self.dirichlet_alpha > 0 and self.root.env.move_size <= 0:
+        # print(self.root.env.move_size)
+
+        if use_dirichlet and self.dirichlet_alpha > 0 and self.root.env.move_size <= 1:
+            print('use dirichlet')
             self._apply_dirichlet_noise_to_root()
         
         for _ in range(iterations):

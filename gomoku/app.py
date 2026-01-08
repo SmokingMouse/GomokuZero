@@ -15,10 +15,12 @@ from gomoku.gomoku_env import GomokuEnvSimple
 from gomoku.policy import ZeroPolicy
 from gomoku.zero_mcts import ZeroMCTS
 
-BOARD_SIZE = 9
+BOARD_SIZE = 7
 DEFAULT_MODEL_PATH = os.getenv(
     "GOMOKU_MODEL_PATH",
-    "gomoku/continue_model/policy_step_940000.pth",
+    # "gomoku/continue_model/policy_step_940000.pth",
+    # "models/gomoku_zero_9_pre5/policy_step_990000.pth",
+    "models/gomoku_zero_9_lab_2/policy_step_80000.pth",
 )
 MCTS_ITERATIONS = int(os.getenv("GOMOKU_MCTS_ITERS", "400"))
 MCTS_PUCT = float(os.getenv("GOMOKU_MCTS_PUCT", "2.0"))

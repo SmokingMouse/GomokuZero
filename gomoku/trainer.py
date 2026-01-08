@@ -1,6 +1,7 @@
 # %%
 import os
 from collections import deque
+from gomoku.evaluate import Evaluate
 from gomoku.player import Player, ZeroMCTSPlayer, arena_parallel
 from gomoku.worker import gather_selfplay_games, get_symmetric_data
 import random
@@ -14,18 +15,20 @@ import tqdm
 import numpy as np
 import ray
 
-board_size = 9
+board_size = 7
 lr = 5e-4
 save_per_steps = 10000
 cpus = 8
 device = 'cuda'
 seed=42
 
-lab_name = 'gomoku_zero_9_pre2'
+lab_name = 'gomoku_zero_9_lab_5'
+comment = 'dag tree'
 batch_size = 256
 threshold=0.2
 alpha = 2.0
 itermax=100
+static_eval_step=1000
 
 # batch_size = 256 # 一个 step 的训练样本
 # itermax=400 # MCTS 最大迭代次数
@@ -53,6 +56,14 @@ elif board_size == 9:
     eval_steps = 1000
     games_per_worker = self_play_num // cpus
     num_workers = cpus
+elif board_size == 7:
+    steps = 150000
+    buffer_size = 30000
+    self_play_per_steps = 200
+    self_play_num = 32
+    eval_steps = 500
+    games_per_worker = self_play_num // cpus
+    num_workers = cpus
 
 
 
@@ -72,7 +83,7 @@ elif board_size == 9:
    # 生成对局时，使用最优模型
 
 def train(policy: ZeroPolicy, optimizor, replay_buffer):
-    writer = SummaryWriter(f'runs/{lab_name}')
+    writer = SummaryWriter(f'runs/{lab_name}', comment=comment)
 
     exclude_list = [
         ".git",          # 排除整个 .git 目录
@@ -86,7 +97,10 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         ".venv/"         # 排除虚拟环境目录
     ]
 
-    ray.init(num_cpus=cpus, runtime_env={"excludes": exclude_list})
+    ray.init(num_cpus=cpus, runtime_env={
+        "excludes": exclude_list, 
+        "working_dir": None,  # <--- 关键：告诉 Ray 不要自动同步当前目录
+    })
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
     scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=5e-5)
     # scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
@@ -102,6 +116,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             with torch.no_grad():
                 # 使用一定比例的最优模型进行 self-play
                 generate_model = best_policy if random.random() > threshold else policy
+                # generate_model = policy
 
                 generate_model.eval()
                 games = gather_selfplay_games(generate_model, 'cpu', board_size=board_size, itermax=itermax, games_per_worker=games_per_worker, num_workers=num_workers)
@@ -131,7 +146,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             r = arena_parallel(
                 policy_cpu_copy,
                 best_policy_cpu_copy,
-                games=50,
+                games=48,
                 board_size=board_size,
                 num_cpus=cpus,
                 eager=False,
@@ -146,6 +161,9 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             writer.add_scalar('Train/win-rate', win_rate, step)
             writer.add_scalar('Train/update-count', update_count, step)
 
+        if step % static_eval_step == 0:
+            score = Evaluate(policy, board_size=board_size)
+            writer.add_scalar('Train/score', score, step)
         
         policy.train()
         batch = random.sample(replay_buffer, batch_size)
@@ -200,7 +218,7 @@ if __name__ == "__main__":
     buffer = deque(maxlen=buffer_size)
 
     policy = ZeroPolicy(board_size=board_size)
-    # policy.load_state_dict(torch.load(f'models/gomoku_zero_15/policy_step_13500.pth'))
+    # policy.load_state_dict(torch.load(f'/home/zhangpeng.pada/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_10000.pth'))
     policy.to(device)
     optimizor = torch.optim.Adam(policy.parameters(), lr=lr, weight_decay=1e-4)
     train(policy, optimizor, buffer)
