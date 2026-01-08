@@ -11,6 +11,8 @@ import random
 import torch
 import os
 import ray
+import importlib
+import numpy as np
 # %%
 
 class Player:
@@ -178,7 +180,20 @@ class RandomPlayer(Player):
 
         return action
 
-def self_play(policy, device, board_size, itermax=200):
+def make_policy_fn(policy: ZeroPolicy, device: str):
+    policy.eval()
+
+    def policy_fn(obs: np.ndarray):
+        x = torch.from_numpy(obs).reshape(1, -1).float().to(device)
+        with torch.no_grad():
+            policy_logits, value = policy(x)
+        probs = policy_logits.squeeze(0).cpu().numpy()
+        return probs, float(value.item())
+
+    return policy_fn
+
+
+def self_play(policy, device, board_size, itermax=200, use_rs_mcts: bool = False):
     player1 = ZeroMCTSPlayer(policy, device=device)
     player2 = ZeroMCTSPlayer(policy, device=device)
 
@@ -189,7 +204,7 @@ def self_play(policy, device, board_size, itermax=200):
 
     winner, infos = play_one_game(
         player1, player2, board_size=board_size, game=env,
-        itermax=itermax, eager=False
+        itermax=itermax, eager=False, use_rs_mcts=use_rs_mcts
     )
     print(f"Game over! Winner: {winner}")
     return infos
@@ -197,7 +212,10 @@ def self_play(policy, device, board_size, itermax=200):
 @timer
 def play_one_game(player1, player2, board_size: int, 
                   game: GomokuEnv = None,
-                  render=False, itermax=200, eager=False, MCTS=LightZeroMCTS):
+                  render=False, itermax=200, eager=False,
+                  MCTS=LightZeroMCTS, use_rs_mcts: bool = False,
+                  temperature_moves: int = 10,
+                  use_dirichlet: bool = True):
     states = []
     probs = []
     rewards = []
@@ -207,15 +225,77 @@ def play_one_game(player1, player2, board_size: int,
     else:
         env = game
     
-    mcts1 = MCTS(player1.policy, device=player1.device)
-    mcts2 = MCTS(player2.policy, device=player2.device)
+    if use_rs_mcts:
+        zero_mcts_rs = importlib.import_module("zero_mcts_rs")
+        if not hasattr(zero_mcts_rs, "LightZeroMCTS"):
+            raise RuntimeError(
+                "zero_mcts_rs module loaded, but LightZeroMCTS is missing. "
+                "Run maturin develop in zero_mcts_rs first."
+            )
+        policy_fn1 = make_policy_fn(player1.policy, player1.device)
+        policy_fn2 = make_policy_fn(player2.policy, player2.device)
+        mcts1 = zero_mcts_rs.LightZeroMCTS(
+            board_size=board_size,
+            puct=2.0,
+            dirichlet_alpha=0.3,
+            dirichlet_epsilon=0.25,
+        )
+        mcts2 = zero_mcts_rs.LightZeroMCTS(
+            board_size=board_size,
+            puct=2.0,
+            dirichlet_alpha=0.3,
+            dirichlet_epsilon=0.25,
+        )
+    else:
+        mcts1 = MCTS(player1.policy, device=player1.device)
+        mcts2 = MCTS(player2.policy, device=player2.device)
 
     while not env._is_terminal():
+        if use_rs_mcts:
+            current_state = env._get_observation()
+            board_flat = env.board.astype(np.int8).reshape(-1)
+            if env.current_player == 1:
+                mcts1.run(
+                    board_flat,
+                    env.current_player,
+                    policy_fn1,
+                    iterations=itermax,
+                    use_dirichlet=use_dirichlet,
+                    move_size=env.move_size,
+                    last_action=env.last_action,
+                )
+                num_moves = env.move_size
+                temperature = 0.0 if eager else (1.0 if num_moves < temperature_moves else 0.0)
+                action, probs_for_training = mcts1.select_action_with_temperature(temperature, None)
+            else:
+                mcts2.run(
+                    board_flat,
+                    env.current_player,
+                    policy_fn2,
+                    iterations=itermax,
+                    use_dirichlet=use_dirichlet,
+                    move_size=env.move_size,
+                    last_action=env.last_action,
+                )
+                num_moves = env.move_size
+                temperature = 0.0 if eager else (1.0 if num_moves < temperature_moves else 0.0)
+                action, probs_for_training = mcts2.select_action_with_temperature(temperature, None)
+
+            states.append(current_state)
+            probs.append(probs_for_training)
+            env.step(action)
+            mcts1.step(action)
+            mcts2.step(action)
+            if render:
+                env.render()
+            continue
+
         infos = player1.play(env, **{
-            'mcts': mcts1, 
-            'itermax': itermax, 
-            'eager': eager
-        }) 
+            'mcts': mcts1,
+            'itermax': itermax,
+            'eager': eager,
+            'temperature_moves': temperature_moves,
+        })
         states.append(infos['state'])
         probs.append(infos['probs'])
 
@@ -223,16 +303,15 @@ def play_one_game(player1, player2, board_size: int,
         env.step(action1)
         mcts1.step(action1)
         mcts2.step(action1)
-        # mcts1.update_root(action1)
-        # mcts2.update_root(action1)
         if render:
             env.render()
         if env._is_terminal():
             break
         infos = player2.play(env, **{
-            'mcts': mcts2, 
-            'itermax': itermax, 
-            'eager': eager
+            'mcts': mcts2,
+            'itermax': itermax,
+            'eager': eager,
+            'temperature_moves': temperature_moves,
         })
         states.append(infos['state'])
         probs.append(infos['probs'])

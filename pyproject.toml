@@ -33,4 +33,5 @@ packages = ["gomoku"]
 [dependency-groups]
 dev = [
     "maturin>=1.11.2",
+    "ruff>=0.14.10",
 ]

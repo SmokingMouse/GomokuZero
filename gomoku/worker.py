@@ -1,11 +1,10 @@
-
-#%%
-import time
+# %%
 from gomoku.player import self_play
 from gomoku.policy import ZeroPolicy
 import ray
 import numpy as np
 from gomoku.utils import timer
+
 
 # 1. 初始化 Ray
 @ray.remote
@@ -21,11 +20,27 @@ class SelfPlayWorker:
         self.policy.eval()
 
     def play_game(self, itermax):
-        r = self_play(self.policy, self.device, itermax=itermax, board_size=self.board_size)
+        r = self_play(
+            self.policy,
+            self.device,
+            itermax=itermax,
+            board_size=self.board_size,
+            use_rs_mcts=True,
+        )
+        # r = self_play(  # uncomment to use Rust MCTS
+        #     self.policy,
+        #     self.device,
+        #     itermax=itermax,
+        #     board_size=self.board_size,
+        #     use_rs_mcts=True,
+        # )
         return r
 
+
 @timer
-def gather_selfplay_games(policy, device, board_size=9, itermax=200, num_workers=6, games_per_worker=5):
+def gather_selfplay_games(
+    policy, device, board_size=9, itermax=200, num_workers=6, games_per_worker=5
+):
     """
     在单个 worker 上进行 self-play，返回游戏数据。
     """
@@ -36,16 +51,20 @@ def gather_selfplay_games(policy, device, board_size=9, itermax=200, num_workers
 
     workers = [SelfPlayWorker.remote(board_size, device) for _ in range(num_workers)]
     set_weights_tasks = [worker.set_weights.remote(weights_ref) for worker in workers]
-    ray.get(set_weights_tasks) # 等待权重设置完成
-    game_futures = [worker.play_game.remote(itermax) for _ in range(games_per_worker) for worker in workers] # 简化版任务分配
+    ray.get(set_weights_tasks)  # 等待权重设置完成
+    game_futures = [
+        worker.play_game.remote(itermax)
+        for _ in range(games_per_worker)
+        for worker in workers
+    ]  # 简化版任务分配
 
     games_results = ray.get(game_futures)
-        
-    return games_results
 
+    return games_results
 
     # games = ray.get(game_futures)
     # return games
+
 
 def get_symmetric_data(state, pi, board_size=9):
     """
@@ -54,32 +73,35 @@ def get_symmetric_data(state, pi, board_size=9):
     """
     # 输入校验
     assert isinstance(state, np.ndarray), "state应为numpy数组"
-    assert state.ndim == 3 and state.shape[1:] == (board_size, board_size), "state形状应为(C, 9, 9)"
+    assert state.ndim == 3 and state.shape[1:] == (board_size, board_size), (
+        "state形状应为(C, 9, 9)"
+    )
     assert len(pi) == board_size * board_size, f"pi长度必须为81，实际为{len(pi)}"
-    
+
     pi_board = np.asarray(pi).reshape((board_size, board_size))
     augmented_samples = []
-    
+
     # 4种旋转（0/90/180/270度）+ 水平翻转，共8种对称
     for i in range(4):
         # 旋转
         rotated_state = np.rot90(state, axes=(1, 2), k=i)  # 仅旋转空间维度
         rotated_pi = np.rot90(pi_board, k=i)
         augmented_samples.append((rotated_state, rotated_pi.flatten().tolist()))
-        
+
         # 旋转后翻转
         flipped_state = np.fliplr(rotated_state)
         flipped_pi = np.fliplr(rotated_pi)
         augmented_samples.append((flipped_state, flipped_pi.flatten().tolist()))
-    
+
     return augmented_samples
 
+
 # 2. 主进程逻辑
-if __name__ == '__main__':
+if __name__ == "__main__":
     total_games = 9
     iter_max = 40
     board_size = 9
-    device = 'cpu'
+    device = "cpu"
     num_workers = 6
 
     ray.init(num_cpus=6)
@@ -93,4 +115,3 @@ if __name__ == '__main__':
     print(f"Generated {len(games)} games.")
 
 # %%
-

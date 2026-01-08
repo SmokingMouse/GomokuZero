@@ -1,10 +1,10 @@
-use numpy::{PyArray1, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use rand::distributions::{Distribution, WeightedIndex};
+use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyModule};
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand_distr::Dirichlet;
+use rand_distr::Gamma;
 use std::collections::HashMap;
 
 // ==========================================
@@ -15,35 +15,29 @@ struct RustGomokuEnv {
     board: Vec<i8>, // 0: empty, 1: black, 2: white
     size: usize,
     current_player: i8,
-    move_count: usize,
-    winner: i8, // 0: none, 1: black, 2: white, 3: draw
+    winner: i8, // 0: draw/none, 1: black, 2: white
+    done: bool,
+    move_size: usize,
+    last_action: i32,
 }
 
 impl RustGomokuEnv {
-    fn new(size: usize) -> Self {
-        RustGomokuEnv {
-            board: vec![0; size * size],
-            size,
-            current_player: 1,
-            move_count: 0,
-            winner: 0,
-        }
-    }
-
-    // 从 Python 传入的 board 数组初始化
-    fn from_board(board: &[i8], size: usize, current_player: i8) -> Self {
-        let mut move_count = 0;
-        for &c in board {
-            if c != 0 {
-                move_count += 1;
-            }
-        }
+    fn from_board(
+        board: &[i8],
+        size: usize,
+        current_player: i8,
+        move_size: Option<usize>,
+        last_action: Option<i32>,
+    ) -> Self {
+        let counted_moves = board.iter().filter(|&&c| c != 0).count();
         RustGomokuEnv {
             board: board.to_vec(),
             size,
             current_player,
-            move_count,
-            winner: 0, // 注意：这里假设传入的状态没有结束，或者需要在外部判断
+            winner: 0,
+            done: false,
+            move_size: move_size.unwrap_or(counted_moves),
+            last_action: last_action.unwrap_or(-1),
         }
     }
 
@@ -51,26 +45,33 @@ impl RustGomokuEnv {
         self.board
             .iter()
             .enumerate()
-            .filter(|(_, &v)| v == 0)
+            .filter(|(_, v)| **v == 0)
             .map(|(i, _)| i)
             .collect()
     }
 
     fn step(&mut self, action: usize) {
+        if self.done {
+            return;
+        }
         if self.board[action] != 0 {
             panic!("Invalid move: {}", action);
         }
         self.board[action] = self.current_player;
-        self.move_count += 1;
-        
-        // 检查胜负
+        self.move_size += 1;
+        self.last_action = action as i32;
+
         if self.check_win(action) {
             self.winner = self.current_player;
-        } else if self.move_count == self.size * self.size {
-            self.winner = 3; // Draw
+            self.done = true;
+        } else if self.move_size == self.size * self.size {
+            self.winner = 0;
+            self.done = true;
         }
 
-        self.current_player = 3 - self.current_player;
+        if !self.done {
+            self.current_player = 3 - self.current_player;
+        }
     }
 
     fn check_win(&self, action: usize) -> bool {
@@ -82,7 +83,6 @@ impl RustGomokuEnv {
 
         for (dx, dy) in directions {
             let mut count = 1;
-            // 正向
             let mut nx = x + dx;
             let mut ny = y + dy;
             while nx >= 0 && nx < size && ny >= 0 && ny < size {
@@ -94,7 +94,7 @@ impl RustGomokuEnv {
                 nx += dx;
                 ny += dy;
             }
-            // 反向
+
             nx = x - dx;
             ny = y - dy;
             while nx >= 0 && nx < size && ny >= 0 && ny < size {
@@ -113,25 +113,62 @@ impl RustGomokuEnv {
         }
         false
     }
+
+    fn observation(&self) -> Vec<Vec<Vec<f32>>> {
+        let mut player1 = vec![vec![0.0f32; self.size]; self.size];
+        let mut player2 = vec![vec![0.0f32; self.size]; self.size];
+        for (idx, &cell) in self.board.iter().enumerate() {
+            let row = idx / self.size;
+            let col = idx % self.size;
+            if cell == 1 {
+                player1[row][col] = 1.0;
+            } else if cell == 2 {
+                player2[row][col] = 1.0;
+            }
+        }
+
+        let mut last_action_state = vec![vec![0.0f32; self.size]; self.size];
+        if self.last_action >= 0 {
+            let action = self.last_action as usize;
+            let row = action / self.size;
+            let col = action % self.size;
+            last_action_state[row][col] = 1.0;
+        }
+
+        let mut channels = Vec::with_capacity(3);
+        if self.current_player == 2 {
+            channels.push(player2);
+            channels.push(player1);
+        } else {
+            channels.push(player1);
+            channels.push(player2);
+        }
+        channels.push(last_action_state);
+        channels
+    }
 }
 
 // ==========================================
-// 2. MCTS 节点结构
+// 2. MCTS 节点结构 (Arena 存储)
 // ==========================================
 struct Node {
     visits: u32,
     value_sum: f32,
-    prior: f32,
-    children: HashMap<usize, Node>,
+    prior_prob: f32,
+    parent: Option<usize>,
+    children: HashMap<usize, usize>,
+    is_noise_added: bool,
 }
 
 impl Node {
-    fn new(prior: f32) -> Self {
+    fn new(prior_prob: f32, parent: Option<usize>) -> Self {
         Node {
             visits: 0,
             value_sum: 0.0,
-            prior,
+            prior_prob,
+            parent,
             children: HashMap::new(),
+            is_noise_added: false,
         }
     }
 
@@ -149,11 +186,13 @@ impl Node {
 // ==========================================
 #[pyclass]
 struct LightZeroMCTS {
-    root: Option<Node>,
+    root: Option<usize>,
     board_size: usize,
     puct: f32,
     dirichlet_alpha: f32,
     dirichlet_epsilon: f32,
+    nodes: Vec<Node>,
+    transposition_table: HashMap<Vec<i8>, usize>,
 }
 
 #[pymethods]
@@ -166,141 +205,123 @@ impl LightZeroMCTS {
             puct,
             dirichlet_alpha,
             dirichlet_epsilon,
+            nodes: Vec::new(),
+            transposition_table: HashMap::new(),
         }
     }
 
-    // 对应 Python 的 step 方法：复用树
     fn step(&mut self, action: usize) {
-        if let Some(mut root) = self.root.take() {
-            if let Some(child) = root.children.remove(&action) {
-                // 如果子节点存在，直接将其作为新的根节点
-                self.root = Some(child);
-                // print!("Tree reused!"); 
+        if let Some(root_idx) = self.root {
+            if let Some(&child_idx) = self.nodes[root_idx].children.get(&action) {
+                self.root = Some(child_idx);
+                self.nodes[child_idx].parent = None;
                 return;
             }
         }
-        // 如果无法复用，重置为空
         self.root = None;
     }
 
-    // 对应 Python 的 run 方法
     fn run(
         &mut self,
         py: Python,
-        initial_board: PyReadonlyArray1<i8>, // 从 Python 传入当前棋盘
-        current_player: i8,                  // 传入当前玩家
-        policy_fn: PyObject,                 // Python 的预测函数
+        initial_board: PyReadonlyArray1<i8>,
+        current_player: i8,
+        policy_fn: PyObject,
         iterations: usize,
         use_dirichlet: bool,
+        move_size: Option<usize>,
+        last_action: Option<i32>,
     ) -> PyResult<usize> {
         let board_vec = initial_board.as_slice()?.to_vec();
-        
-        // 1. 初始化根节点
+        let env = RustGomokuEnv::from_board(
+            &board_vec,
+            self.board_size,
+            current_player,
+            move_size,
+            last_action,
+        );
+
         if self.root.is_none() {
-            let mut root = Node::new(1.0);
-            // 首次扩展，需要调用 Policy
-            let env = RustGomokuEnv::from_board(&board_vec, self.board_size, current_player);
-            self.expand_root(py, &mut root, &env, &policy_fn)?;
-            self.root = Some(root);
+            let board_hash = env.board.clone();
+            if let Some(&root_idx) = self.transposition_table.get(&board_hash) {
+                self.root = Some(root_idx);
+                self.nodes[root_idx].parent = None;
+            } else {
+                let root_idx = self.new_node(1.0, None);
+                self.expand(py, root_idx, &env, &policy_fn)?;
+                self.root = Some(root_idx);
+                self.transposition_table.insert(board_hash, root_idx);
+            }
         }
 
-        let mut root = self.root.take().unwrap();
-
-        // 2. 添加噪声
-        if use_dirichlet {
-            self.add_dirichlet_noise(&mut root);
+        if use_dirichlet && env.move_size <= 1 {
+            if let Some(root_idx) = self.root {
+                self.add_dirichlet_noise(root_idx);
+            }
         }
 
-        // 3. 主循环
         for _ in 0..iterations {
-            let mut node = &mut root;
-            let mut env = RustGomokuEnv::from_board(&board_vec, self.board_size, current_player);
-            let mut path = Vec::new(); // 记录路径用于回溯
+            let mut node_idx = self.root.unwrap();
+            let mut scratch_env = env.clone();
 
-            // --- SELECT ---
-            while !node.children.is_empty() {
-                let action = self.select_child(node);
-                env.step(action);
-                path.push(action);
-                node = node.children.get_mut(&action).unwrap();
+            while !self.nodes[node_idx].children.is_empty() {
+                let (action, child_idx) = self.select_child(node_idx);
+                scratch_env.step(action);
+                node_idx = child_idx;
             }
 
-            // --- EXPAND & EVALUATE ---
-            let value = if env.winner != 0 {
-                // 游戏结束
-                if env.winner == 3 {
-                    0.0 // Draw
+            let leaf_hash = scratch_env.board.clone();
+            if !self.transposition_table.contains_key(&leaf_hash) {
+                self.transposition_table.insert(leaf_hash, node_idx);
+            }
+
+            let value = if scratch_env.done {
+                if scratch_env.winner == 0 {
+                    0.0
                 } else {
-                    // 如果 env.winner == env.current_player (刚走这步的人赢了)，
-                    // 对于 current_player 来说是 +1。
-                    // 但通常 value 是相对于 parent 视角的。
-                    // 这里的 env.current_player 已经是下一个人了。
-                    // 所以如果 env.winner != env.current_player，说明上一个人赢了。
-                    -1.0 
+                    -1.0
                 }
             } else {
-                // 未结束，调用 Python 预测
-                self.expand_node(py, node, &env, &policy_fn)?
+                self.expand(py, node_idx, &scratch_env, &policy_fn)?
             };
 
-            // --- BACKPROPAGATE ---
-            // 先更新叶子
-            self.backpropagate(node, value);
-            
-            // 再沿着 path 从上往下找回节点并更新 (Rust 所有权限制，需要重新从 root 走一遍或者用指针，这里为了安全用重走)
-            // 优化：其实上面拿到 &mut node 时就丢失了 root 的引用。
-            // 在 Rust 中实现反向链表比较麻烦，通常使用递归或者在单函数内处理。
-            // 这里我们为了简单，把逻辑拆分一下：
-            // 我们不能同时持有 root 和 child 的可变引用。
-            // 所以，我们需要把 select, expand, backprop 放在一个递归函数里，或者使用 非递归的 unsafe 指针。
-            // 为了安全，这里演示 "递归式" 写法，虽然在 loop 里调用递归有点怪，但能通过借用检查。
-        }
-        
-        // 上面的循环结构在 Rust 处理 &mut 树时很难写，下面换成“递归+循环”的模式来实现 MCTS
-        // 为了避免复杂的生命周期，我们将逻辑改为：每次迭代重新从 root 递归
-        self.root = Some(root);
-        
-        // 重新获取 root 引用进行迭代
-        for _ in 0..iterations {
-             self.simulate(py, &board_vec, current_player, &policy_fn)?;
+            self.backpropagate(node_idx, value);
         }
 
-        // 返回最佳动作
         Ok(self.best_action_greedy())
     }
 
-    // 获取用于训练的 pi 和 action
     fn select_action_with_temperature(
         &self,
         temperature: f32,
-        top_k: Option<usize>
+        top_k: Option<usize>,
     ) -> PyResult<(usize, Py<PyArray1<f32>>)> {
-        let root = self.root.as_ref().expect("Run must be called before select");
-        let mut visits: Vec<(usize, u32)> = root.children.iter().map(|(&a, n)| (a, n.visits)).collect();
+        let root_idx = match self.root {
+            Some(idx) => idx,
+            None => return self.empty_pi(),
+        };
+
+        let visits: Vec<(usize, u32)> = self.nodes[root_idx]
+            .children
+            .iter()
+            .map(|(&action, &child_idx)| (action, self.nodes[child_idx].visits))
+            .collect();
 
         if visits.is_empty() {
-             // 应该不会发生
-             return Python::with_gil(|py| {
-                let pi = PyArray1::zeros(py, self.board_size * self.board_size, false);
-                Ok((0, pi.to_owned()))
-            });
+            return self.empty_pi();
         }
 
-        // 1. Action Selection
         let selected_action = if temperature == 0.0 {
-            // Greedy
+            let mut shuffled = visits.clone();
             let mut rng = thread_rng();
-            visits.shuffle(&mut rng); // Tie-breaking
-            visits.iter().max_by_key(|x| x.1).unwrap().0
+            shuffled.shuffle(&mut rng);
+            shuffled.iter().max_by_key(|x| x.1).unwrap().0
         } else {
-            // Stochastic
-            let mut counts: Vec<f32> = visits.iter().map(|x| x.1 as f32).collect();
             let mut actions: Vec<usize> = visits.iter().map(|x| x.0).collect();
+            let mut counts: Vec<f32> = visits.iter().map(|x| x.1 as f32).collect();
 
-            // Top-K
             if let Some(k) = top_k {
-                if k < visits.len() {
-                    // 简单的排序截断
+                if k < actions.len() {
                     let mut zipped: Vec<_> = actions.into_iter().zip(counts.into_iter()).collect();
                     zipped.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
                     zipped.truncate(k);
@@ -310,7 +331,6 @@ impl LightZeroMCTS {
                 }
             }
 
-            // Temperature application
             let exp = 1.0 / temperature;
             let weights: Vec<f32> = counts.iter().map(|c| c.powf(exp)).collect();
             let dist = WeightedIndex::new(&weights).unwrap();
@@ -318,195 +338,260 @@ impl LightZeroMCTS {
             actions[dist.sample(&mut rng)]
         };
 
-        // 2. Training Target (Pi) - Raw visits normalized
-        let total_visits: u32 = root.children.values().map(|n| n.visits).sum();
-        
-        let py_pi = Python::with_gil(|py| {
+        let total_visits: u32 = self.nodes[root_idx]
+            .children
+            .values()
+            .map(|&idx| self.nodes[idx].visits)
+            .sum();
+
+        let py_pi: Py<PyArray1<f32>> = Python::with_gil(|py| {
             let pi_vec = PyArray1::zeros(py, self.board_size * self.board_size, false);
-            let mut pi_slice = pi_vec.readwrite();
-            
+            let pi_slice = unsafe { pi_vec.as_slice_mut().unwrap() };
             if total_visits > 0 {
-                for (action, node) in &root.children {
-                    pi_slice[*action] = node.visits as f32 / total_visits as f32;
+                for (&action, &child_idx) in &self.nodes[root_idx].children {
+                    pi_slice[action] = self.nodes[child_idx].visits as f32 / total_visits as f32;
                 }
             }
-            pi_vec.to_owned()
+            pi_vec.into()
         });
 
         Ok((selected_action, py_pi))
     }
 }
 
-// 内部实现方法
 impl LightZeroMCTS {
-    fn simulate(
-        &mut self,
-        py: Python,
-        board_vec: &[i8],
-        current_player: i8,
-        policy_fn: &PyObject,
-    ) -> PyResult<()> {
-        let root = self.root.as_mut().unwrap();
-        let mut env = RustGomokuEnv::from_board(board_vec, self.board_size, current_player);
-        
-        Self::recursive_search(py, root, &mut env, policy_fn, self.puct)
+    fn new_node(&mut self, prior: f32, parent: Option<usize>) -> usize {
+        let idx = self.nodes.len();
+        self.nodes.push(Node::new(prior, parent));
+        idx
     }
 
-    // 递归搜索 helper，解决 Rust 的借用检查问题
-    fn recursive_search(
-        py: Python,
-        node: &mut Node,
-        env: &mut RustGomokuEnv,
-        policy_fn: &PyObject,
-        puct: f32,
-    ) -> PyResult<f32> {
-        // 如果游戏结束
-        if env.winner != 0 {
-             if env.winner == 3 { return Ok(0.0); } // Draw
-             // 此时 env.current_player 是输家，所以返回 -1
-             return Ok(-1.0);
-        }
-
-        // 如果是叶子节点 (未扩展)
-        if node.children.is_empty() {
-            // Expand & Evaluate
-            // 构造输入给 Python: (1, board_size, board_size) 的 tensor 或者是 list
-            // 为了最快速度，我们传 numpy array
-            let board_data = env.board.iter().map(|&x| x as f32).collect::<Vec<f32>>();
-            let py_array = PyArray1::from_vec(py, board_data);
-            
-            // 这里的 policy_fn 接收一维数组，需要在 Python 端 reshape 或这里传 shape
-            // 假设 Python 端处理: def policy(board_array): ...
-            let result = policy_fn.call1(py, (py_array,))?; 
-            let (probs_dict, value): (&PyDict, f32) = result.extract(py)?;
-
-            // Expand
-            let valid_actions = env.get_valid_actions();
-            let mut policy_sum = 0.0;
-            
-            for action in valid_actions {
-                // 从 Python 字典中获取概率: {action: prob}
-                if let Some(prob) = probs_dict.get_item(action) {
-                    let p: f32 = prob.extract()?;
-                    let mut child = Node::new(p);
-                    node.children.insert(action, child);
-                    policy_sum += p;
-                }
-            }
-            
-            // Normalize
-            if policy_sum > 0.0 {
-                for child in node.children.values_mut() {
-                    child.prior /= policy_sum;
-                }
-            }
-
-            // Update self
-            node.visits += 1;
-            node.value_sum += value;
-            return Ok(value);
-        }
-
-        // Select
-        let action = Self::select_child_action(node, puct);
-        
-        // Step Env
-        env.step(action);
-        
-        // Recurse
-        let child = node.children.get_mut(&action).unwrap();
-        let value = Self::recursive_search(py, child, env, policy_fn, puct)?;
-        
-        // Backprop (Value Flip)
-        let value = -value;
-        node.visits += 1;
-        node.value_sum += value;
-        
-        Ok(value)
-    }
-
-    fn select_child_action(node: &Node, puct: f32) -> usize {
-        let sqrt_visits = (node.visits as f32).sqrt();
+    fn select_child(&self, node_idx: usize) -> (usize, usize) {
+        let sqrt_visits = (self.nodes[node_idx].visits as f32).sqrt();
         let mut best_score = -f32::INFINITY;
-        let mut best_action = 0;
+        let mut best_action = 0usize;
+        let mut best_child = 0usize;
 
-        for (&action, child) in &node.children {
-            let q = child.q_value(); // 这里通常取 -Q，但 AlphaZero 标准是取父视角的 Q。
-            // 这里的 q_value 是 child.value_sum / child.visits。
-            // child.value_sum 是从 child 的视角积累的胜负。
-            // 对于 parent 来说，child 赢就是 parent 输，所以用 -child.q()
-            let q_parent = -q; 
-            
-            let u = puct * child.prior * sqrt_visits / (1.0 + child.visits as f32);
-            let score = q_parent + u;
-
+        for (&action, &child_idx) in &self.nodes[node_idx].children {
+            let child = &self.nodes[child_idx];
+            let q_parent = -child.q_value();
+            let u_value =
+                self.puct * child.prior_prob * sqrt_visits / (1.0 + child.visits as f32);
+            let score = q_parent + u_value;
             if score > best_score {
                 best_score = score;
                 best_action = action;
+                best_child = child_idx;
             }
         }
-        best_action
+        (best_action, best_child)
     }
 
-    fn expand_root(
-        &self, 
-        py: Python, 
-        node: &mut Node, 
-        env: &RustGomokuEnv, 
-        policy_fn: &PyObject
+    fn expand(
+        &mut self,
+        py: Python,
+        node_idx: usize,
+        env: &RustGomokuEnv,
+        policy_fn: &PyObject,
     ) -> PyResult<f32> {
-        // 与 recursive_search 里的 expand 逻辑基本一致，专门用于初始化
-        let board_data = env.board.iter().map(|&x| x as f32).collect::<Vec<f32>>();
-        let py_array = PyArray1::from_vec(py, board_data);
-        
+        let obs = env.observation();
+        let py_array = PyArray3::from_vec3(py, &obs)?;
         let result = policy_fn.call1(py, (py_array,))?;
-        let (probs_dict, value): (&PyDict, f32) = result.extract(py)?;
+        let (probs_obj, value): (PyObject, f32) = result.extract(py)?;
+        let probs_any = probs_obj.bind(py);
+        let policy_probs = Self::extract_policy_probs(py, &probs_any, self.board_size)?;
 
         let valid_actions = env.get_valid_actions();
         let mut policy_sum = 0.0;
-        
+        let mut child_specs = Vec::with_capacity(valid_actions.len());
+
         for action in valid_actions {
-            if let Some(prob) = probs_dict.get_item(action) {
-                let p: f32 = prob.extract()?;
-                node.children.insert(action, Node::new(p));
-                policy_sum += p;
+            let p = policy_probs[action];
+            child_specs.push((action, p));
+            policy_sum += p;
+        }
+
+        if policy_sum > 0.0 {
+            for (_, prob) in child_specs.iter_mut() {
+                *prob /= policy_sum;
             }
         }
-         if policy_sum > 0.0 {
-            for child in node.children.values_mut() {
-                child.prior /= policy_sum;
-            }
+
+        for (action, prob) in child_specs {
+            let child_idx = self.new_node(prob, Some(node_idx));
+            self.nodes[node_idx].children.insert(action, child_idx);
         }
-        node.visits += 1;
-        node.value_sum += value;
+
         Ok(value)
     }
 
-    fn add_dirichlet_noise(&mut self, node: &mut Node) {
-        if node.children.is_empty() { return; }
-        let count = node.children.len();
-        let dirichlet = Dirichlet::new(&vec![self.dirichlet_alpha; count]).unwrap();
-        let mut rng = thread_rng();
-        let noise = dirichlet.sample(&mut rng);
-        
-        let epsilon = self.dirichlet_epsilon;
-        for (i, child) in node.children.values_mut().enumerate() {
-            child.prior = (1.0 - epsilon) * child.prior + epsilon * noise[i];
+    fn backpropagate(&mut self, node_idx: usize, value: f32) {
+        let mut current = Some(node_idx);
+        let mut v = value;
+        while let Some(idx) = current {
+            let parent = {
+                let node = &mut self.nodes[idx];
+                node.visits += 1;
+                node.value_sum += v;
+                node.parent
+            };
+            v = -v;
+            current = parent;
         }
     }
 
+    fn add_dirichlet_noise(&mut self, node_idx: usize) {
+        if self.nodes[node_idx].is_noise_added {
+            return;
+        }
+        let count = self.nodes[node_idx].children.len();
+        if count == 0 {
+            return;
+        }
+        let noise = Self::sample_dirichlet(self.dirichlet_alpha, count);
+        let epsilon = self.dirichlet_epsilon;
+
+        let child_indices: Vec<usize> = self.nodes[node_idx].children.values().copied().collect();
+        for (i, child_idx) in child_indices.iter().enumerate() {
+            let child = &mut self.nodes[*child_idx];
+            child.prior_prob = (1.0 - epsilon) * child.prior_prob + epsilon * noise[i];
+        }
+
+        self.nodes[node_idx].is_noise_added = true;
+    }
+
     fn best_action_greedy(&self) -> usize {
-        let root = self.root.as_ref().unwrap();
-        // 简单的 argmax visits
-        root.children.iter()
-            .max_by_key(|&(_, node)| node.visits)
-            .map(|(a, _)| *a)
+        let root_idx = self.root.unwrap();
+        self.nodes[root_idx]
+            .children
+            .iter()
+            .max_by_key(|&(_, &child_idx)| self.nodes[child_idx].visits)
+            .map(|(&action, _)| action)
             .unwrap_or(0)
+    }
+
+    fn extract_policy_probs(
+        _py: Python,
+        probs_obj: &Bound<'_, PyAny>,
+        board_size: usize,
+    ) -> PyResult<Vec<f32>> {
+        let total_actions = board_size * board_size;
+
+        if let Ok(prob_dict) = probs_obj.cast::<PyDict>() {
+            let mut probs = vec![0.0f32; total_actions];
+            for (k, v) in prob_dict.iter() {
+                let action: usize = k.extract()?;
+                let p: f32 = v.extract()?;
+                if action < total_actions {
+                    probs[action] = p;
+                }
+            }
+            return Ok(probs);
+        }
+
+        if let Ok(prob_array) = probs_obj.extract::<PyReadonlyArray1<f32>>() {
+            let slice = prob_array.as_slice()?;
+            let mut probs = slice.to_vec();
+            if probs.len() != total_actions {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "policy array length does not match board size",
+                ));
+            }
+            if !Self::is_prob_distribution(&probs) {
+                probs = Self::softmax(&probs);
+            }
+            return Ok(probs);
+        }
+
+        if let Ok(prob_array) = probs_obj.extract::<PyReadonlyArray2<f32>>() {
+            let view = prob_array.as_array();
+            let flattened: Vec<f32> = view.iter().copied().collect();
+            if flattened.len() != total_actions {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "policy array length does not match board size",
+                ));
+            }
+            let probs = if Self::is_prob_distribution(&flattened) {
+                flattened
+            } else {
+                Self::softmax(&flattened)
+            };
+            return Ok(probs);
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "policy output must be dict or numpy array",
+        ))
+    }
+
+    fn is_prob_distribution(values: &[f32]) -> bool {
+        if values.is_empty() {
+            return false;
+        }
+        let mut min_v = f32::INFINITY;
+        let mut max_v = f32::NEG_INFINITY;
+        let mut sum = 0.0;
+        for &v in values {
+            sum += v;
+            if v < min_v {
+                min_v = v;
+            }
+            if v > max_v {
+                max_v = v;
+            }
+        }
+        sum > 0.99 && sum < 1.01 && min_v >= -1e-6 && max_v <= 1.0 + 1e-6
+    }
+
+    fn softmax(values: &[f32]) -> Vec<f32> {
+        let mut max_v = f32::NEG_INFINITY;
+        for &v in values {
+            if v > max_v {
+                max_v = v;
+            }
+        }
+        let mut exp_sum = 0.0;
+        let mut exps = Vec::with_capacity(values.len());
+        for &v in values {
+            let e = (v - max_v).exp();
+            exp_sum += e;
+            exps.push(e);
+        }
+        if exp_sum == 0.0 {
+            return vec![0.0; values.len()];
+        }
+        exps.iter().map(|v| v / exp_sum).collect()
+    }
+
+    fn sample_dirichlet(alpha: f32, count: usize) -> Vec<f32> {
+        let mut rng = thread_rng();
+        let gamma = Gamma::new(alpha, 1.0).unwrap();
+        let mut samples = Vec::with_capacity(count);
+        let mut sum = 0.0f32;
+        for _ in 0..count {
+            let v: f32 = gamma.sample(&mut rng);
+            sum += v;
+            samples.push(v);
+        }
+        if sum == 0.0 {
+            return vec![1.0 / count as f32; count];
+        }
+        for v in samples.iter_mut() {
+            *v /= sum;
+        }
+        samples
+    }
+
+    fn empty_pi(&self) -> PyResult<(usize, Py<PyArray1<f32>>)> {
+        Python::with_gil(|py| {
+            let pi = PyArray1::zeros(py, self.board_size * self.board_size, false);
+            Ok((0, pi.into()))
+        })
     }
 }
 
 #[pymodule]
-fn zero_mcts_rs(_py: Python, m: &PyModule) -> PyResult<()> {
+fn zero_mcts_rs(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<LightZeroMCTS>()?;
     Ok(())
 }
