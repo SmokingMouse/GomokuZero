@@ -47,6 +47,14 @@ body {
   background: radial-gradient(circle at 30% 30%, #fff, #d7d7d7 70%);
 }
 
+.best-marker {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid var(--ember);
+  box-shadow: 0 6px 10px rgba(16, 18, 23, 0.2);
+}
+
 @keyframes float-in {
   0% {
     opacity: 0;

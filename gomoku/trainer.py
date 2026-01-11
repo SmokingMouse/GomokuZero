@@ -1,6 +1,10 @@
 import os
 from collections import deque
-from gomoku.evaluate import Evaluate
+from gomoku.evaluate import (
+    evaluate_validation_samples,
+    load_validation_samples,
+    resolve_validation_path,
+)
 from gomoku.player import arena_parallel
 from gomoku.worker import gather_selfplay_games, get_symmetric_data
 import random
@@ -15,19 +19,21 @@ import numpy as np
 import ray
 
 board_size = 9
-lr = 5e-4
+lr = 1e-3
 save_per_steps = 10000
 cpus = 16
 device = "cuda"
 seed = 42
 
-lab_name = "gomoku_zero_9_lab_1"
-comment = "dag tree"
+lab_name = "gomoku_zero_9_lab_4"
+comment = "model with dirichlet epsilon=0.15, adjust lr, more dirichlet noise steps"
 batch_size = 256
 threshold = 0.2
 alpha = 2.0
-itermax = 200
-static_eval_step = 1000
+itermax = 400
+validation_eval_step = 1000
+validation_top_k = 5
+validation_path = None
 
 # batch_size = 256 # 一个 step 的训练样本
 # itermax=400 # MCTS 最大迭代次数
@@ -49,10 +55,10 @@ if board_size == 15:
     num_workers = cpus
 elif board_size == 9:
     steps = 1000000
-    buffer_size = 100000
-    self_play_per_steps = 250
+    buffer_size = 60000
+    self_play_per_steps = 250  # 4000 episodes -> 250 steps
     self_play_num = 32
-    eval_steps = 1000
+    eval_steps = 100000
     games_per_worker = self_play_num // cpus
     num_workers = cpus
 elif board_size == 7:
@@ -104,7 +110,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         },
     )
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
-    scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=5e-5)
+    scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=1e-4)
     # scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
 
     best_policy = ZeroPolicy(board_size=board_size)
@@ -117,8 +123,8 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         if step % self_play_per_steps == 0:
             with torch.no_grad():
                 # 使用一定比例的最优模型进行 self-play
-                generate_model = best_policy if random.random() > threshold else policy
-                # generate_model = policy
+                # generate_model = best_policy if random.random() > threshold else policy
+                generate_model = policy
 
                 generate_model.eval()
                 games = gather_selfplay_games(
@@ -168,9 +174,45 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
             writer.add_scalar("Train/win-rate", win_rate, step)
             writer.add_scalar("Train/update-count", update_count, step)
 
-        if step % static_eval_step == 0:
-            score = Evaluate(policy, board_size=board_size)
-            writer.add_scalar("Train/score", score, step)
+        if step % validation_eval_step == 0:
+            samples = load_validation_samples(resolve_validation_path(validation_path))
+            if samples:
+                metrics = evaluate_validation_samples(
+                    policy,
+                    samples,
+                    device=device,
+                    top_k=validation_top_k,
+                    difficulty=None,
+                )
+                writer.add_scalar("Validation/top1", metrics["top1_accuracy"], step)
+                writer.add_scalar("Validation/topk", metrics["topk_accuracy"], step)
+                writer.add_scalar("Validation/total", metrics["total"], step)
+
+                for level in range(1, 6):
+                    level_metrics = evaluate_validation_samples(
+                        policy,
+                        samples,
+                        device=device,
+                        top_k=validation_top_k,
+                        difficulty=level,
+                    )
+                    if level_metrics["total"] == 0:
+                        continue
+                    writer.add_scalar(
+                        f"Validation/level_{level}/top1",
+                        level_metrics["top1_accuracy"],
+                        step,
+                    )
+                    writer.add_scalar(
+                        f"Validation/level_{level}/topk",
+                        level_metrics["topk_accuracy"],
+                        step,
+                    )
+                    writer.add_scalar(
+                        f"Validation/level_{level}/total",
+                        level_metrics["total"],
+                        step,
+                    )
 
         policy.train()
         batch = random.sample(replay_buffer, batch_size)
@@ -230,7 +272,12 @@ if __name__ == "__main__":
     buffer = deque(maxlen=buffer_size)
 
     policy = ZeroPolicy(board_size=board_size)
-    # policy.load_state_dict(torch.load(f'/home/zhangpeng.pada/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_10000.pth'))
+    # policy.load_state_dict(
+    #     torch.load(
+    #         # "/home/zhangpeng.pada/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_990000.pth"
+    #         "/home/smokingmouse/python/ai/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_990000.pth"
+    #     )
+    # )
     policy.to(device)
     optimizor = torch.optim.Adam(policy.parameters(), lr=lr, weight_decay=1e-4)
     train(policy, optimizor, buffer)

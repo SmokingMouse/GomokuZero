@@ -48,6 +48,8 @@ class GomokuEnv(gym.Env):
         self.winner = None
         self.done = False
         self.move_history = []
+        self.last_action = -1
+        self.move_size = 0
         
         return self._get_observation(), self._get_info()
     

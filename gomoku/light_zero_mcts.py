@@ -176,7 +176,9 @@ class LightZeroMCTS:
     def _best_action(self, env):
         return self.select_action_with_temperature(0, 1)
 
-    def select_action_with_temperature(self, temperature=1.0, top_k=None):
+    def select_action_with_temperature(
+        self, temperature=1.0, top_k=None, forbidden_actions=None
+    ):
         """
         根据 MCTS 的访问次数选择动作，并返回用于训练的概率分布 pi。
         """
@@ -185,9 +187,17 @@ class LightZeroMCTS:
             # 但通常 run 之后肯定有 children
             return -1, []
 
+        forbidden_set = set(forbidden_actions or [])
         # 1. 提取 (action, visits) 数据
         # 注意：LightNode 的 children 是字典 {action_id: node}
         visits = [(action, node.visits) for action, node in self.root.children.items()]
+        filtered_visits = [
+            (action, count)
+            for action, count in visits
+            if action not in forbidden_set
+        ]
+        if filtered_visits:
+            visits = filtered_visits
 
         # 2. 生成动作 (Action Selection)
         if temperature == 0:
@@ -231,5 +241,12 @@ class LightZeroMCTS:
         if total_visits > 0:
             for act, node in self.root.children.items():
                 pi[act] = node.visits / total_visits
+            if forbidden_set:
+                for act in forbidden_set:
+                    if 0 <= act < len(pi):
+                        pi[act] = 0.0
+                pi_sum = pi.sum()
+                if pi_sum > 0:
+                    pi /= pi_sum
 
         return action, pi

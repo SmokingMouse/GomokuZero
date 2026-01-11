@@ -196,16 +196,24 @@ class ZeroMCTS:
         """Return the best action based on visit count"""
         return self.select_action_with_temperature(temperature=0, top_k=1)
     
-    def select_action_with_temperature(self, temperature=1.0, top_k = None):
+    def select_action_with_temperature(
+        self, temperature=1.0, top_k=None, forbidden_actions=None
+    ):
         if not self.root.children:
             # 如果没有子节点，随机选一个（虽然不太可能发生）
             return random.choice(self.root.env.get_valid_actions()), {}
 
+        forbidden_set = set(forbidden_actions or [])
         child_visits = sorted(
             [(action, child, child.visits) for action, child in self.root.children.items()],
             key = lambda x: x[2], 
             reverse=True,
         )
+
+        if forbidden_set:
+            filtered = [visit for visit in child_visits if visit[0] not in forbidden_set]
+            if filtered:
+                child_visits = filtered
     
         if temperature == 0:
             # 零温度等同于取最大值
@@ -232,7 +240,17 @@ class ZeroMCTS:
         pi_distribution = {a: node.visits for a, node in self.root.children.items()}
         total_visits = sum(pi_distribution.values())
         total_visits = total_visits if total_visits > 0 else 1  # 防止除以零
-        probs_for_training = [pi_distribution.get(i, 0) / total_visits for i in range(self.root.env.board_size**2)]
+        probs_for_training = [
+            pi_distribution.get(i, 0) / total_visits
+            for i in range(self.root.env.board_size**2)
+        ]
+        if forbidden_set:
+            for act in forbidden_set:
+                if 0 <= act < len(probs_for_training):
+                    probs_for_training[act] = 0.0
+            prob_sum = sum(probs_for_training)
+            if prob_sum > 0:
+                probs_for_training = [p / prob_sum for p in probs_for_training]
     
         return action, probs_for_training
 

@@ -1,6 +1,10 @@
+import json
+from pathlib import Path
+
 import torch
 import numpy as np
 import torch.nn.functional as F
+from gomoku.policy import ZeroPolicy
 
 def generate_benchmark_dataset():
     """
@@ -428,6 +432,160 @@ def generate_benchmark_dataset_7x7():
     y_tensor = torch.tensor(np.array(dataset_y[:50]), dtype=torch.float32)
 
     return X_tensor, y_tensor
+
+
+def resolve_validation_path(path: str | None) -> Path:
+    if path:
+        return Path(path)
+    repo_root = Path(__file__).resolve().parent.parent
+    default_path = repo_root / "gomoku" / "validation_sets" / "validation_set.jsonl"
+    legacy_path = repo_root / "gomoku" / "validate_sets" / "validation_set.jsonl"
+    if default_path.exists():
+        return default_path
+    if legacy_path.exists():
+        return legacy_path
+    return default_path
+
+
+def load_validation_samples(path: Path) -> list[dict]:
+    if path.is_dir():
+        paths = sorted(path.glob("*.jsonl"))
+    else:
+        paths = [path]
+
+    samples = []
+    for file_path in paths:
+        if not file_path.exists():
+            continue
+        with file_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                samples.append(entry)
+    return samples
+
+
+def build_observation(state: object, board_size: int) -> np.ndarray:
+    if isinstance(state, dict):
+        board = state.get("board")
+        current_player = state.get("current_player", 1) or 1
+        last_action = state.get("last_action", -1)
+    else:
+        board = state
+        current_player = 1
+        last_action = -1
+
+    board_array = np.asarray(board, dtype=np.int8)
+    if board_array.ndim == 3 and board_array.shape[0] in (2, 3):
+        return board_array.astype(np.float32)
+
+    if board_array.shape != (board_size, board_size):
+        raise ValueError("board shape mismatch for validation sample")
+
+    player1_board = (board_array == 1).astype(np.float32)
+    player2_board = (board_array == 2).astype(np.float32)
+    last_action_state = np.zeros((board_size, board_size), dtype=np.float32)
+    if isinstance(last_action, int) and last_action >= 0:
+        row = last_action // board_size
+        col = last_action % board_size
+        if 0 <= row < board_size and 0 <= col < board_size:
+            last_action_state[row, col] = 1.0
+
+    if current_player == 2:
+        return np.stack([player2_board, player1_board, last_action_state], axis=0)
+    return np.stack([player1_board, player2_board, last_action_state], axis=0)
+
+
+def normalize_best_actions(best_action: object) -> list[int]:
+    if isinstance(best_action, list):
+        return [int(a) for a in best_action if isinstance(a, int)]
+    if isinstance(best_action, int):
+        return [best_action]
+    return []
+
+
+def evaluate_validation_samples(
+    policy: ZeroPolicy,
+    samples: list[dict],
+    device: str = "cpu",
+    top_k: int = 5,
+    difficulty: int | None = None,
+) -> dict:
+    policy.eval()
+    total = 0
+    top1_hits = 0
+    topk_hits = 0
+
+    for entry in samples:
+        if difficulty is not None:
+            meta = entry.get("meta", {}) or {}
+            if meta.get("difficulty") != difficulty:
+                continue
+        state = entry.get("state")
+        board_size = entry.get("board_size", policy.board_size)
+        best_actions = normalize_best_actions(entry.get("best_action"))
+        if not best_actions:
+            continue
+        if board_size != policy.board_size:
+            continue
+        try:
+            obs = build_observation(state, board_size)
+        except ValueError:
+            continue
+
+        x = torch.from_numpy(obs).reshape(1, -1).float().to(device)
+        with torch.no_grad():
+            logits, _ = policy(x)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+
+        total += 1
+        top1_action = int(np.argmax(probs))
+        if top1_action in best_actions:
+            top1_hits += 1
+
+        k = min(top_k, probs.shape[0])
+        topk_actions = np.argpartition(-probs, k - 1)[:k]
+        if any(action in topk_actions for action in best_actions):
+            topk_hits += 1
+
+    return {
+        "total": total,
+        "top1_accuracy": top1_hits / total if total else 0.0,
+        "topk_accuracy": topk_hits / total if total else 0.0,
+    }
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--validation_path", type=str, default=None)
+    parser.add_argument("--top_k", type=int, default=5)
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--difficulty", type=int, default=None)
+    args = parser.parse_args()
+
+    samples = load_validation_samples(resolve_validation_path(args.validation_path))
+    board_size = samples[0].get("board_size", 9) if samples else 9
+    policy = ZeroPolicy(board_size=board_size).to(args.device)
+    policy.load_state_dict(torch.load(args.model, map_location=args.device))
+    metrics = evaluate_validation_samples(
+        policy,
+        samples,
+        device=args.device,
+        top_k=args.top_k,
+        difficulty=args.difficulty,
+    )
+    print(
+        f"samples={metrics['total']}, "
+        f"top1={metrics['top1_accuracy']:.2%}, "
+        f"top{args.top_k}={metrics['topk_accuracy']:.2%}"
+    )
 
 
 def Evaluate(policy, board_size=9):

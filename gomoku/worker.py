@@ -50,17 +50,28 @@ def gather_selfplay_games(
     # ray.put(policy)
 
     workers = [SelfPlayWorker.remote(board_size, device) for _ in range(num_workers)]
-    set_weights_tasks = [worker.set_weights.remote(weights_ref) for worker in workers]
-    ray.get(set_weights_tasks)  # 等待权重设置完成
-    game_futures = [
-        worker.play_game.remote(itermax)
-        for _ in range(games_per_worker)
-        for worker in workers
-    ]  # 简化版任务分配
+    try:
+        set_weights_tasks = [
+            worker.set_weights.remote(weights_ref) for worker in workers
+        ]
+        ray.get(set_weights_tasks)  # 等待权重设置完成
+        game_futures = [
+            worker.play_game.remote(itermax)
+            for _ in range(games_per_worker)
+            for worker in workers
+        ]  # 简化版任务分配
 
-    games_results = ray.get(game_futures)
-
-    return games_results
+        games_results = ray.get(game_futures)
+        games = []
+        for result in games_results:
+            if isinstance(result, list):
+                games.extend(result)
+            else:
+                games.append(result)
+        return games
+    finally:
+        for worker in workers:
+            ray.kill(worker)
 
     # games = ray.get(game_futures)
     # return games
@@ -89,8 +100,8 @@ def get_symmetric_data(state, pi, board_size=9):
         augmented_samples.append((rotated_state, rotated_pi.flatten().tolist()))
 
         # 旋转后翻转
-        flipped_state = np.fliplr(rotated_state)
-        flipped_pi = np.fliplr(rotated_pi)
+        flipped_state = np.flip(rotated_state, axis=2)
+        flipped_pi = np.flip(rotated_pi, axis=1)
         augmented_samples.append((flipped_state, flipped_pi.flatten().tolist()))
 
     return augmented_samples

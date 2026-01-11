@@ -5,7 +5,7 @@ use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand_distr::Gamma;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ==========================================
 // 1. 纯 Rust 实现的 Gomoku 逻辑 (为了速度)
@@ -254,7 +254,8 @@ impl LightZeroMCTS {
             }
         }
 
-        if use_dirichlet && env.move_size <= 1 {
+        // if use_dirichlet && env.move_size <= 1 {
+        if use_dirichlet {
             if let Some(root_idx) = self.root {
                 self.add_dirichlet_noise(root_idx);
             }
@@ -291,16 +292,22 @@ impl LightZeroMCTS {
         Ok(self.best_action_greedy())
     }
 
+    #[pyo3(signature = (temperature, top_k=None, forbidden_actions=None))]
     fn select_action_with_temperature(
         &self,
         temperature: f32,
         top_k: Option<usize>,
+        forbidden_actions: Option<Vec<usize>>,
     ) -> PyResult<(usize, Py<PyArray1<f32>>)> {
         let root_idx = match self.root {
             Some(idx) => idx,
             None => return self.empty_pi(),
         };
 
+        let forbidden_set: HashSet<usize> = forbidden_actions
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let visits: Vec<(usize, u32)> = self.nodes[root_idx]
             .children
             .iter()
@@ -311,14 +318,25 @@ impl LightZeroMCTS {
             return self.empty_pi();
         }
 
+        let filtered_visits: Vec<(usize, u32)> = visits
+            .iter()
+            .copied()
+            .filter(|(action, _)| !forbidden_set.contains(action))
+            .collect();
+        let candidate_visits = if filtered_visits.is_empty() {
+            visits.clone()
+        } else {
+            filtered_visits
+        };
+
         let selected_action = if temperature == 0.0 {
-            let mut shuffled = visits.clone();
+            let mut shuffled = candidate_visits.clone();
             let mut rng = thread_rng();
             shuffled.shuffle(&mut rng);
             shuffled.iter().max_by_key(|x| x.1).unwrap().0
         } else {
-            let mut actions: Vec<usize> = visits.iter().map(|x| x.0).collect();
-            let mut counts: Vec<f32> = visits.iter().map(|x| x.1 as f32).collect();
+            let mut actions: Vec<usize> = candidate_visits.iter().map(|x| x.0).collect();
+            let mut counts: Vec<f32> = candidate_visits.iter().map(|x| x.1 as f32).collect();
 
             if let Some(k) = top_k {
                 if k < actions.len() {
@@ -350,6 +368,20 @@ impl LightZeroMCTS {
             if total_visits > 0 {
                 for (&action, &child_idx) in &self.nodes[root_idx].children {
                     pi_slice[action] = self.nodes[child_idx].visits as f32 / total_visits as f32;
+                }
+            }
+            if !forbidden_set.is_empty() {
+                let mut sum = 0.0f32;
+                for (idx, val) in pi_slice.iter_mut().enumerate() {
+                    if forbidden_set.contains(&idx) {
+                        *val = 0.0;
+                    }
+                    sum += *val;
+                }
+                if sum > 0.0 {
+                    for val in pi_slice.iter_mut() {
+                        *val /= sum;
+                    }
                 }
             }
             pi_vec.into()
