@@ -1,12 +1,14 @@
 import os
 from collections import deque
+
+from gomoku.config import load_config
 from gomoku.evaluate import (
     evaluate_validation_samples,
     load_validation_samples,
     resolve_validation_path,
 )
-from gomoku.player import arena_parallel
 from gomoku.worker import gather_selfplay_games, get_symmetric_data
+
 import random
 from gomoku.policy import ZeroPolicy
 from torch.utils.tensorboard import SummaryWriter
@@ -18,57 +20,53 @@ import tqdm
 import numpy as np
 import ray
 
-board_size = 9
-lr = 1e-3
-save_per_steps = 10000
-cpus = 16
-device = "cuda"
-seed = 42
+CONFIG = load_config()
+TRAINER_CONFIG = CONFIG.trainer
 
-lab_name = "gomoku_zero_9_lab_4"
-comment = "model with dirichlet epsilon=0.15, adjust lr, more dirichlet noise steps"
-batch_size = 256
-threshold = 0.2
-alpha = 2.0
-itermax = 400
-validation_eval_step = 1000
-validation_top_k = 5
-validation_path = None
+self_play_device = TRAINER_CONFIG.self_play_device
+use_batch_inference = TRAINER_CONFIG.use_batch_inference
+use_shared_policy_server = TRAINER_CONFIG.use_shared_policy_server
+policy_server_device = TRAINER_CONFIG.policy_server_device
+policy_server_concurrency = TRAINER_CONFIG.policy_server_concurrency
+mcts_eval_batch_size = TRAINER_CONFIG.mcts_eval_batch_size
+mcts_virtual_loss = TRAINER_CONFIG.mcts_virtual_loss
+mcts_max_children = TRAINER_CONFIG.mcts_max_children
+mcts_class = TRAINER_CONFIG.mcts_class
+batch_infer_size = TRAINER_CONFIG.batch_infer_size
+batch_infer_wait_ms = TRAINER_CONFIG.batch_infer_wait_ms
+batch_infer_queue = TRAINER_CONFIG.batch_infer_queue
+batch_infer_enqueue_ms = TRAINER_CONFIG.batch_infer_enqueue_ms
+batch_infer_stats_sec = TRAINER_CONFIG.batch_infer_stats_sec
 
-# batch_size = 256 # 一个 step 的训练样本
-# itermax=400 # MCTS 最大迭代次数
-# steps = 1000000 # 总的训练 step
-# buffer_size = 100000 # replay buffer 大小
-# self_play_per_steps = 250 # 每隔多少 step 进行 self-play 生成样本
-# self_play_num = 32 # 每次 self-play 生成多少对局
-# eval_steps = 1000 # 每隔多少 step 进行一次评测
-# games_per_worker = self_play_num // cpus # 每个 worker 负责多少对局
-# num_workers = cpus # worker 数量
+temperature_moves = TRAINER_CONFIG.temperature_moves
 
-if board_size == 15:
-    steps = 200000
-    buffer_size = 200000
-    self_play_per_steps = 150
-    self_play_num = 32
-    eval_steps = 600
-    games_per_worker = self_play_num // cpus
-    num_workers = cpus
-elif board_size == 9:
-    steps = 1000000
-    buffer_size = 60000
-    self_play_per_steps = 250  # 4000 episodes -> 250 steps
-    self_play_num = 32
-    eval_steps = 100000
-    games_per_worker = self_play_num // cpus
-    num_workers = cpus
-elif board_size == 7:
-    steps = 150000
-    buffer_size = 30000
-    self_play_per_steps = 200
-    self_play_num = 32
-    eval_steps = 500
-    games_per_worker = self_play_num // cpus
-    num_workers = cpus
+board_size = TRAINER_CONFIG.board_size
+lr = TRAINER_CONFIG.lr
+save_per_steps = TRAINER_CONFIG.save_per_steps
+cpus = TRAINER_CONFIG.cpus
+device = TRAINER_CONFIG.device
+seed = TRAINER_CONFIG.seed
+
+profile = TRAINER_CONFIG.profiles.get(board_size)
+if profile is None:
+    raise ValueError(f"No trainer profile configured for board_size={board_size}")
+
+lab_name = profile.lab_name
+comment = profile.comment
+batch_size = profile.batch_size
+threshold = profile.threshold
+steps = profile.steps
+buffer_size = profile.buffer_size
+self_play_per_steps = profile.self_play_per_steps
+self_play_num = profile.self_play_num
+eval_steps = profile.eval_steps
+num_workers = profile.num_workers
+games_per_worker = profile.games_per_worker
+alpha = profile.alpha
+itermax = profile.itermax
+validation_eval_step = profile.validation_eval_step
+validation_top_k = profile.validation_top_k
+validation_path = profile.validation_path
 
 
 # 1. gomoku_zero_ray
@@ -110,7 +108,7 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
         },
     )
     # scheduler = ReduceLROnPlateau(optimizor, 'min', patience=100, factor=0.5, min_lr=1e-4)
-    scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=1e-4)
+    scheduler = CosineAnnealingLR(optimizor, T_max=steps, eta_min=5e-5)
     # scheduler = MultiStepLR(optimizor, milestones=[0.5 * steps, 0.75 * steps], gamma=0.2)
 
     best_policy = ZeroPolicy(board_size=board_size)
@@ -129,11 +127,25 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
                 generate_model.eval()
                 games = gather_selfplay_games(
                     generate_model,
-                    "cpu",
+                    self_play_device,
                     board_size=board_size,
                     itermax=itermax,
                     games_per_worker=games_per_worker,
                     num_workers=num_workers,
+                    temperature_moves=temperature_moves,
+                    use_batch_inference=use_batch_inference,
+                    use_shared_policy_server=use_shared_policy_server,
+                    policy_server_device=policy_server_device,
+                    policy_server_concurrency=policy_server_concurrency,
+                    mcts_eval_batch_size=mcts_eval_batch_size,
+                    mcts_virtual_loss=mcts_virtual_loss,
+                    mcts_max_children=mcts_max_children,
+                    batch_size=batch_infer_size,
+                    max_wait_ms=batch_infer_wait_ms,
+                    max_queue_size=batch_infer_queue,
+                    enqueue_timeout_ms=batch_infer_enqueue_ms,
+                    stats_interval_sec=batch_infer_stats_sec,
+                    mcts_class=mcts_class,
                 )
                 for game in games:
                     for i in range(len(game["states"])):
@@ -144,35 +156,35 @@ def train(policy: ZeroPolicy, optimizor, replay_buffer):
                             replay_buffer.append((state, pi, game["rewards"][i]))
             rich.print(f"Self play {self_play_num} times")
 
-        if step != 0 and step % eval_steps == 0:
-            policy.eval()
-            best_policy.eval()
+        # if step != 0 and step % eval_steps == 0:
+        #     policy.eval()
+        #     best_policy.eval()
 
-            policy_cpu_copy = ZeroPolicy(board_size=board_size).to("cpu")
-            policy_state_dict = policy.state_dict()
-            policy_cpu_copy.load_state_dict(policy_state_dict)
+        #     policy_cpu_copy = ZeroPolicy(board_size=board_size).to("cpu")
+        #     policy_state_dict = policy.state_dict()
+        #     policy_cpu_copy.load_state_dict(policy_state_dict)
 
-            best_policy_cpu_copy = ZeroPolicy(board_size=board_size).to("cpu")
-            best_policy_state_dict = best_policy.state_dict()
-            best_policy_cpu_copy.load_state_dict(best_policy_state_dict)
+        #     best_policy_cpu_copy = ZeroPolicy(board_size=board_size).to("cpu")
+        #     best_policy_state_dict = best_policy.state_dict()
+        #     best_policy_cpu_copy.load_state_dict(best_policy_state_dict)
 
-            r = arena_parallel(
-                policy_cpu_copy,
-                best_policy_cpu_copy,
-                games=48,
-                board_size=board_size,
-                num_cpus=cpus,
-                eager=False,
-                itermax=itermax,
-            )
+        #     r = arena_parallel(
+        #         policy_cpu_copy,
+        #         best_policy_cpu_copy,
+        #         games=48,
+        #         board_size=board_size,
+        #         num_cpus=cpus,
+        #         eager=False,
+        #         itermax=itermax,
+        #     )
 
-            win_rate = r["player1_win_rate"]
-            best_policy.load_state_dict(policy.state_dict())
-            if win_rate >= 0.55:
-                update_count += 1
+        #     win_rate = r["player1_win_rate"]
+        #     best_policy.load_state_dict(policy.state_dict())
+        #     if win_rate >= 0.55:
+        #         update_count += 1
 
-            writer.add_scalar("Train/win-rate", win_rate, step)
-            writer.add_scalar("Train/update-count", update_count, step)
+        #     writer.add_scalar("Train/win-rate", win_rate, step)
+        #     writer.add_scalar("Train/update-count", update_count, step)
 
         if step % validation_eval_step == 0:
             samples = load_validation_samples(resolve_validation_path(validation_path))
@@ -271,11 +283,11 @@ if __name__ == "__main__":
     random.seed(seed)
     buffer = deque(maxlen=buffer_size)
 
-    policy = ZeroPolicy(board_size=board_size)
+    policy = ZeroPolicy(board_size=board_size, num_blocks=2, base_channels=32)
     # policy.load_state_dict(
     #     torch.load(
     #         # "/home/zhangpeng.pada/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_990000.pth"
-    #         "/home/smokingmouse/python/ai/GomokuZero/models/gomoku_zero_9_lab_1/policy_step_990000.pth"
+    #         "/home/smokingmouse/python/ai/GomokuZero/models/gomoku_zero_15_lab_1/policy_step_60000.pth"
     #     )
     # )
     policy.to(device)

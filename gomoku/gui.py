@@ -2,15 +2,19 @@ import pygame
 import tkinter as tk
 from tkinter import ttk
 import torch
+from gomoku.config import load_config
 from gomoku.gomoku_env import GomokuEnv
 from gomoku.policy import ZeroPolicy
 from gomoku.zero_mcts import ZeroMCTS
 from gomoku.mcts import MCTS
 
+CONFIG = load_config()
+GUI_CONFIG = CONFIG.gui
+
 # 游戏常量
-BOARD_SIZE = 9
-SQUARE_SIZE = 40
-MARGIN = 40
+BOARD_SIZE = GUI_CONFIG.board_size
+SQUARE_SIZE = GUI_CONFIG.square_size
+MARGIN = GUI_CONFIG.margin
 WIDTH = HEIGHT = SQUARE_SIZE * (BOARD_SIZE - 1) + MARGIN * 2
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
@@ -28,8 +32,11 @@ BTN_BORDER = (60, 60, 60)
 
 class ZeroPlayer():
     def __init__(self, iter = 200, use_dirichlet = False):
-        zero_policy = ZeroPolicy(board_size=BOARD_SIZE, num_blocks=2)
-        zero_policy.load_state_dict(torch.load('continue_model/policy_step_660000.pth', map_location=torch.device('cpu')))
+        zero_policy = ZeroPolicy(board_size=BOARD_SIZE)
+        model_path = GUI_CONFIG.model_path
+        zero_policy.load_state_dict(
+            torch.load(model_path, map_location=torch.device("cpu"))
+        )
         zero_policy.eval()
         self.zero_mcts_player = ZeroMCTS(zero_policy)
         self.iter = iter
@@ -232,7 +239,15 @@ class GomokuBattleGUI:
                            (MARGIN + i * SQUARE_SIZE, HEIGHT - MARGIN), 2)
 
         # 绘制星位
-        star_points = [(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)]
+        if BOARD_SIZE >= 15:
+            star_points = [(3, 3), (3, 11), (11, 3), (11, 11), (7, 7)]
+        elif BOARD_SIZE == 9:
+            star_points = [(2, 2), (2, 6), (6, 2), (6, 6), (4, 4)]
+        elif BOARD_SIZE == 7:
+            star_points = [(2, 2), (2, 4), (4, 2), (4, 4), (3, 3)]
+        else:
+            center = BOARD_SIZE // 2
+            star_points = [(center, center)]
         for r, c in star_points:
             pygame.draw.circle(self.screen, BLACK,
                              (MARGIN + c * SQUARE_SIZE, MARGIN + r * SQUARE_SIZE), 4)

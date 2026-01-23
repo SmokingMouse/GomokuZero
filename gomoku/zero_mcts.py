@@ -5,16 +5,20 @@ import math
 import torch
 import numpy as np
 import random
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gomoku.batched_inference import BatchPolicyRunner
 
 class ZeroTreeNode:
     def __init__(self, env: GomokuEnv, parent=None, prior_prob=None): # 添加 parent 初始化
         self.env = env
         self.visits = 0
-        self.value_sum = 0  # 使用 value_sum 代替 wins，更通用
+        self.value_sum = 0.0  # 使用 value_sum 代替 wins，更通用
         self.children = {}
         self.parent = parent
         self.action_prob = None
-        self.prior_prob = prior_prob if prior_prob is not None else 0.0  
+        self.prior_prob = float(prior_prob) if prior_prob is not None else 0.0  
 
     def add_child(self, action, child_node):
         self.children[action] = child_node
@@ -22,7 +26,7 @@ class ZeroTreeNode:
     # update 方法接收一个从子节点视角看的 value
     def update(self, value):
         self.visits += 1
-        self.value_sum += value
+        self.value_sum += float(value)
     
     # Q-Value，即 exploitation 项
     @property
@@ -42,7 +46,8 @@ class ZeroMCTS:
                 puct=2, 
                 device='cpu',
                 dirichlet_alpha = 0.3,
-                dirichlet_epsilon=0.25):
+                dirichlet_epsilon=0.25,
+                policy_runner: Optional["BatchPolicyRunner"] = None):
         # Policy is evaluation network.
         # self.env = env
         self.policy = policy
@@ -53,6 +58,7 @@ class ZeroMCTS:
         self.dirichlet_epsilon = dirichlet_epsilon
         # self.env2node = {self.hash(env): self.root}
         self.env2node = {}
+        self.policy_runner = policy_runner
     
     # def update_root(self, action):
     #     """After taking action, update the root to the corresponding child node."""
@@ -123,11 +129,10 @@ class ZeroMCTS:
             return node.action_prob, node.q_value
 
         obs = node.env._get_observation()
-        torch_x = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
-        valid_actions_tensor = torch.tensor(node.env.get_valid_actions())
-        
-        with torch.no_grad():
-            policy_logits, value_tensor = self.policy(torch_x)
+        policy_logits, value_tensor = self._policy_eval(obs)
+        valid_actions_tensor = torch.tensor(
+            node.env.get_valid_actions(), device=policy_logits.device
+        )
             
         # Mask invalid actions
         mask = torch.full_like(policy_logits, -1e8)
@@ -145,6 +150,14 @@ class ZeroMCTS:
         }
         
         return node.action_prob, value_tensor.item()
+
+    def _policy_eval(self, obs: np.ndarray):
+        if self.policy_runner is not None:
+            return self.policy_runner.predict(obs)
+
+        torch_x = torch.from_numpy(obs).unsqueeze(0).float().to(self.device)
+        with torch.no_grad():
+            return self.policy(torch_x)
     
     def _select(self, node: ZeroTreeNode):
         current = node
@@ -170,7 +183,11 @@ class ZeroMCTS:
             if action not in node.children:
                 child_env = node.env.clone()
                 child_env.step(action)
-                child_node = ZeroTreeNode(child_env, parent=node, prior_prob=policy_probs[action])
+                child_node = ZeroTreeNode(
+                    child_env,
+                    parent=node,
+                    prior_prob=float(policy_probs[action]),
+                )
                 node.add_child(action, child_node)
                 self.env2node[self.hash(child_env)] = child_node
 

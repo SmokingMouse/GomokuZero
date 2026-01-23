@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 
+
 class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ResBlock, self).__init__()
@@ -22,30 +23,35 @@ class ResBlock(nn.Module):
         out = F.relu(out)
         return out
 
+
 class ZeroPolicy(nn.Module):
-    def __init__(self, board_size, num_blocks = 2):
+    def __init__(self, board_size, num_blocks=2, base_channels=32):
         super(ZeroPolicy, self).__init__()
         self.board_size = board_size
-        self.channel_size = 3 # 1. board state, 2. player turn, 3. Last action 4. Available action
-        
+        self.channel_size = (
+            3  # 1. board state, 2. player turn, 3. Last action 4. Available action
+        )
+
         # Shared trunk - simple conv layers as in AlphaZero
-        self.conv1 = nn.Conv2d(self.channel_size, 32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        # self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        # self.bn2 = nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv2d(
+            self.channel_size, base_channels, kernel_size=3, padding=1
+        )
+        self.bn1 = nn.BatchNorm2d(base_channels)
+        # self.conv2 = nn.Conv2d(base_channels, base_channels, kernel_size=3, padding=1)
+        # self.bn2 = nn.BatchNorm2d(base_channels)
 
         # Residual blocks
-        self.res_blocks = nn.ModuleList([
-            ResBlock(32, 32) for _ in range(num_blocks)
-        ])
-        
+        self.res_blocks = nn.ModuleList(
+            [ResBlock(base_channels, base_channels) for _ in range(num_blocks)]
+        )
+
         # Policy head
-        self.policy_conv = nn.Conv2d(32, 2, kernel_size=1)
+        self.policy_conv = nn.Conv2d(base_channels, 2, kernel_size=1)
         self.policy_bn = nn.BatchNorm2d(2)
         self.policy_fc = nn.Linear(2 * board_size * board_size, board_size * board_size)
-        
+
         # Value head
-        self.value_conv = nn.Conv2d(32, 1, kernel_size=1)
+        self.value_conv = nn.Conv2d(base_channels, 1, kernel_size=1)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_fc1 = nn.Linear(board_size * board_size, 64)
         self.value_fc2 = nn.Linear(64, 1)
@@ -53,15 +59,15 @@ class ZeroPolicy(nn.Module):
     def forward(self, x: torch.Tensor):
         # Input: (batch_size, channel_size * board_size * board_size)
         batch_size = x.size(0)
-        
+
         # Reshape to (batch_size, channel_size, board_size, board_size)
         x = x.view(batch_size, self.channel_size, self.board_size, self.board_size)
-        
+
         # Shared trunk
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
-        
+
         # x = self.conv2(x)
         # x = self.bn2(x)
         # x = F.relu(x)
@@ -69,7 +75,7 @@ class ZeroPolicy(nn.Module):
         # Residual blocks
         for res_block in self.res_blocks:
             x = res_block(x)
-        
+
         # Policy head
         policy = self.policy_conv(x)
         policy = self.policy_bn(policy)
@@ -78,7 +84,7 @@ class ZeroPolicy(nn.Module):
         policy = self.policy_fc(policy)
         # policy = F.log_softmax(policy, dim=1)
         # policy = F.softmax(policy, dim=1)
-        
+
         # Value head
         value = self.value_conv(x)
         value = self.value_bn(value)
@@ -88,8 +94,9 @@ class ZeroPolicy(nn.Module):
         value = F.relu(value)
         value = self.value_fc2(value)
         value = F.tanh(value)
-        
+
         return policy, value
+
 
 # %%
 if __name__ == "__main__":

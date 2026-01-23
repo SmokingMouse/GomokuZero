@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,24 +15,34 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from gomoku.config import load_config
 from gomoku.gomoku_env import GomokuEnvSimple
 from gomoku.policy import ZeroPolicy
-from gomoku.zero_mcts import ZeroMCTS
+from gomoku.zero_mcgs import ZeroMCGS
 
-BOARD_SIZE = 9
-DEFAULT_MODEL_PATH = os.getenv(
-    "GOMOKU_MODEL_PATH",
-    # "models/continue_model/policy_step_10000.pth",
-    # "models/gomoku_zero_9_pre5/policy_step_990000.pth",
-    # "models/gomoku_zero_9_lab_2/policy_step_900000.pth",
-    # "models/gomoku_zero_9_lab_3/policy_step_250000.pth",
-    "models/gomoku_zero_9_lab_4/policy_step_30000.pth",
-)
-MCTS_ITERATIONS = int(os.getenv("GOMOKU_MCTS_ITERS", "400"))
-MCTS_PUCT = float(os.getenv("GOMOKU_MCTS_PUCT", "2.0"))
-MAX_WORKERS = int(os.getenv("GOMOKU_AI_WORKERS", "2"))
+CONFIG = load_config()
+APP_CONFIG = CONFIG.app
+
+BOARD_SIZE = APP_CONFIG.board_size
+DEFAULT_MODEL_PATH = APP_CONFIG.model_path
+MCTS_ITERATIONS = APP_CONFIG.mcts_iterations
+MCTS_PUCT = APP_CONFIG.mcts_puct
+MAX_WORKERS = APP_CONFIG.max_workers
+CORS_ORIGINS = APP_CONFIG.cors_origins
 VALIDATION_DIR = Path(__file__).resolve().parent / "validation_sets"
-VALIDATION_FILE = VALIDATION_DIR / "validation_set.jsonl"
+
+
+def resolve_validation_file() -> Path:
+    sized = VALIDATION_DIR / f"validation_set_{BOARD_SIZE}.jsonl"
+    legacy = VALIDATION_DIR / "validation_set.jsonl"
+    if sized.exists():
+        return sized
+    if BOARD_SIZE == 9 and legacy.exists():
+        return legacy
+    return sized
+
+
+VALIDATION_FILE = resolve_validation_file()
 
 
 def resolve_model_path(model_path: str) -> Path:
@@ -201,7 +210,7 @@ manager = ConnectionManager()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("GOMOKU_CORS_ORIGINS", "*").split(","),
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -222,14 +231,14 @@ def game_state_payload(session: GameSession) -> dict[str, Any]:
 
 
 def compute_ai_action(env: GomokuEnvSimple) -> int:
-    zero_mcts = ZeroMCTS(
+    zero_mcts = ZeroMCGS(
         policy=POLICY,
         puct=MCTS_PUCT,
         device="cpu",
-        dirichlet_alpha=0.0,
+        dirichlet_alpha=1,
         dirichlet_epsilon=0.0,
     )
-    action, _ = zero_mcts.run(env, iterations=MCTS_ITERATIONS, use_dirichlet=False)
+    action, _ = zero_mcts.run(env, iterations=MCTS_ITERATIONS, temperature=0.0)
     return int(action)
 
 

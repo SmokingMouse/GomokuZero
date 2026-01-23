@@ -24,6 +24,7 @@ dependencies = [
     "websocket>=0.2.1",
     "fastapi-cli>=0.0.20",
     "maturin>=1.11.2",
+    "torchsummary>=1.5.1",
 ]
 
 [tool.setuptools]

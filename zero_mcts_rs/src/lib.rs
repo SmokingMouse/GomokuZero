@@ -182,6 +182,33 @@ impl Node {
 }
 
 // ==========================================
+// 2.1 MCGS 节点结构 (Graph Search)
+// ==========================================
+struct McgsEdge {
+    child: usize,
+    visits: u32,
+    prior_prob: f32,
+}
+
+struct McgsNode {
+    raw_value: f32,
+    q_value: f32,
+    visit_count: u32,
+    children: HashMap<usize, McgsEdge>,
+}
+
+impl McgsNode {
+    fn new(raw_value: f32) -> Self {
+        McgsNode {
+            raw_value,
+            q_value: raw_value,
+            visit_count: 0,
+            children: HashMap::new(),
+        }
+    }
+}
+
+// ==========================================
 // 3. MCTS 主类 (暴露给 Python)
 // ==========================================
 #[pyclass]
@@ -191,20 +218,43 @@ struct LightZeroMCTS {
     puct: f32,
     dirichlet_alpha: f32,
     dirichlet_epsilon: f32,
+    max_children: usize,
     nodes: Vec<Node>,
+    transposition_table: HashMap<Vec<i8>, usize>,
+}
+
+// ==========================================
+// 3.1 MCGS 主类 (暴露给 Python)
+// ==========================================
+#[pyclass]
+struct ZeroMCGS {
+    root: Option<usize>,
+    board_size: usize,
+    puct: f32,
+    dirichlet_alpha: f32,
+    dirichlet_epsilon: f32,
+    nodes: Vec<McgsNode>,
     transposition_table: HashMap<Vec<i8>, usize>,
 }
 
 #[pymethods]
 impl LightZeroMCTS {
     #[new]
-    fn new(board_size: usize, puct: f32, dirichlet_alpha: f32, dirichlet_epsilon: f32) -> Self {
+    #[pyo3(signature = (board_size, puct, dirichlet_alpha, dirichlet_epsilon, max_children=None))]
+    fn new(
+        board_size: usize,
+        puct: f32,
+        dirichlet_alpha: f32,
+        dirichlet_epsilon: f32,
+        max_children: Option<usize>,
+    ) -> Self {
         LightZeroMCTS {
             root: None,
             board_size,
             puct,
             dirichlet_alpha,
             dirichlet_epsilon,
+            max_children: max_children.unwrap_or(0),
             nodes: Vec::new(),
             transposition_table: HashMap::new(),
         }
@@ -443,6 +493,12 @@ impl LightZeroMCTS {
             policy_sum += p;
         }
 
+        if self.max_children > 0 && child_specs.len() > self.max_children {
+            child_specs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            child_specs.truncate(self.max_children);
+            policy_sum = child_specs.iter().map(|(_, p)| *p).sum();
+        }
+
         if policy_sum > 0.0 {
             for (_, prob) in child_specs.iter_mut() {
                 *prob /= policy_sum;
@@ -622,8 +678,367 @@ impl LightZeroMCTS {
     }
 }
 
+#[pymethods]
+impl ZeroMCGS {
+    #[new]
+    #[pyo3(signature = (board_size, puct, dirichlet_alpha, dirichlet_epsilon))]
+    fn new(
+        board_size: usize,
+        puct: f32,
+        dirichlet_alpha: f32,
+        dirichlet_epsilon: f32,
+    ) -> Self {
+        ZeroMCGS {
+            root: None,
+            board_size,
+            puct,
+            dirichlet_alpha,
+            dirichlet_epsilon,
+            nodes: Vec::new(),
+            transposition_table: HashMap::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.root = None;
+        self.nodes.clear();
+        self.transposition_table.clear();
+    }
+
+    fn step(&mut self, action: usize) {
+        if let Some(root_idx) = self.root {
+            if let Some(edge) = self.nodes[root_idx].children.get(&action) {
+                self.root = Some(edge.child);
+                return;
+            }
+        }
+        self.root = None;
+    }
+
+    #[pyo3(signature = (initial_board, current_player, policy_fn, iterations=800, temperature=1.0, use_dirichlet=true, move_size=None, last_action=None))]
+    fn run(
+        &mut self,
+        py: Python,
+        initial_board: PyReadonlyArray1<i8>,
+        current_player: i8,
+        policy_fn: PyObject,
+        iterations: usize,
+        temperature: f32,
+        use_dirichlet: bool,
+        move_size: Option<usize>,
+        last_action: Option<i32>,
+    ) -> PyResult<(usize, Py<PyArray1<f32>>)> {
+        let board_vec = initial_board.as_slice()?.to_vec();
+        let env = RustGomokuEnv::from_board(
+            &board_vec,
+            self.board_size,
+            current_player,
+            move_size,
+            last_action,
+        );
+
+        if self.root.is_none() {
+            let board_hash = env.board.clone();
+            if let Some(&root_idx) = self.transposition_table.get(&board_hash) {
+                self.root = Some(root_idx);
+            } else {
+                let root_idx = self.new_node(0.0);
+                self.transposition_table.insert(board_hash, root_idx);
+                self.root = Some(root_idx);
+            }
+        }
+
+        if let Some(root_idx) = self.root {
+            if self.nodes[root_idx].children.is_empty()
+                && self.nodes[root_idx].visit_count == 0
+                && !env.done
+            {
+                self.expand(py, root_idx, &env, &policy_fn)?;
+                if use_dirichlet {
+                    self.add_dirichlet_noise(root_idx);
+                }
+            }
+        }
+
+        for _ in 0..iterations {
+            let mut node_idx = self.root.unwrap();
+            let mut scratch_env = env.clone();
+            let mut search_path: Vec<(usize, usize)> = Vec::new();
+
+            while !self.nodes[node_idx].children.is_empty() {
+                let (action, next_idx) = self.select_child(node_idx);
+                search_path.push((node_idx, action));
+                scratch_env.step(action);
+                node_idx = next_idx;
+                if scratch_env.done {
+                    break;
+                }
+            }
+
+            if scratch_env.done {
+                let value = if scratch_env.winner == 0 { 0.0 } else { -1.0 };
+                let node = &mut self.nodes[node_idx];
+                node.raw_value = value;
+                node.q_value = value;
+            } else if self.nodes[node_idx].children.is_empty() {
+                self.expand(py, node_idx, &scratch_env, &policy_fn)?;
+            }
+
+            self.backpropagate(&search_path);
+        }
+
+        self.select_action_with_temperature(temperature)
+    }
+
+    #[pyo3(signature = (temperature=1.0))]
+    fn select_action_with_temperature(
+        &self,
+        temperature: f32,
+    ) -> PyResult<(usize, Py<PyArray1<f32>>)> {
+        let root_idx = match self.root {
+            Some(idx) => idx,
+            None => return self.empty_pi(),
+        };
+
+        if self.nodes[root_idx].children.is_empty() {
+            return self.empty_pi();
+        }
+
+        let mut visits: Vec<(usize, u32)> = self.nodes[root_idx]
+            .children
+            .iter()
+            .map(|(&action, edge)| (action, edge.visits))
+            .collect();
+        visits.sort_by_key(|(action, _)| *action);
+
+        let actions: Vec<usize> = visits.iter().map(|x| x.0).collect();
+        let counts: Vec<f32> = visits.iter().map(|x| x.1 as f32).collect();
+        let (selected_action, pi_probs) = if temperature == 0.0 {
+            let total: f32 = counts.iter().sum();
+            let probs = if total > 0.0 {
+                counts.iter().map(|c| c / total).collect()
+            } else {
+                vec![1.0 / counts.len() as f32; counts.len()]
+            };
+            let mut action = 0usize;
+            let mut best = 0u32;
+            for (idx, &count) in visits.iter().enumerate() {
+                if count.1 > best {
+                    best = count.1;
+                    action = actions[idx];
+                }
+            }
+            (action, probs)
+        } else {
+            let exp = 1.0 / temperature;
+            let mut weights: Vec<f32> = counts.iter().map(|c| c.powf(exp)).collect();
+            let weight_sum: f32 = weights.iter().sum();
+            let probs = if weight_sum > 0.0 {
+                weights.iter().map(|w| w / weight_sum).collect::<Vec<_>>()
+            } else {
+                vec![1.0 / counts.len() as f32; counts.len()]
+            };
+            weights = probs.clone();
+            let dist = WeightedIndex::new(&weights).unwrap();
+            let mut rng = thread_rng();
+            let action = actions[dist.sample(&mut rng)];
+            (action, probs)
+        };
+
+        let py_pi: Py<PyArray1<f32>> = Python::with_gil(|py| {
+            let pi_vec = PyArray1::zeros(py, self.board_size * self.board_size, false);
+            let pi_slice = unsafe { pi_vec.as_slice_mut().unwrap() };
+            for (idx, action) in actions.iter().enumerate() {
+                pi_slice[*action] = pi_probs[idx];
+            }
+            pi_vec.into()
+        });
+
+        Ok((selected_action, py_pi))
+    }
+}
+
+impl ZeroMCGS {
+    fn new_node(&mut self, raw_value: f32) -> usize {
+        let idx = self.nodes.len();
+        self.nodes.push(McgsNode::new(raw_value));
+        idx
+    }
+
+    fn select_child(&self, node_idx: usize) -> (usize, usize) {
+        let parent_visits: u32 = self.nodes[node_idx]
+            .children
+            .values()
+            .map(|edge| edge.visits)
+            .sum();
+        let sqrt_parent_visits = (parent_visits as f32 + 1e-8).sqrt();
+        let mut edges: Vec<(usize, usize, u32, f32)> = self.nodes[node_idx]
+            .children
+            .iter()
+            .map(|(&action, edge)| (action, edge.child, edge.visits, edge.prior_prob))
+            .collect();
+        edges.sort_by_key(|(action, _, _, _)| *action);
+
+        let mut best_score = -f32::INFINITY;
+        let mut best_action = 0usize;
+        let mut best_child = 0usize;
+
+        for (action, child_idx, visits, prior_prob) in edges {
+            let child = &self.nodes[child_idx];
+            let q_value = -child.q_value;
+            let u_value =
+                self.puct * prior_prob * sqrt_parent_visits / (1.0 + visits as f32);
+            let score = q_value + u_value;
+            if score > best_score || (score == best_score && action < best_action) {
+                best_score = score;
+                best_action = action;
+                best_child = child_idx;
+            }
+        }
+
+        (best_action, best_child)
+    }
+
+    fn expand(
+        &mut self,
+        py: Python,
+        node_idx: usize,
+        env: &RustGomokuEnv,
+        policy_fn: &PyObject,
+    ) -> PyResult<f32> {
+        let obs = env.observation();
+        let py_array = PyArray3::from_vec3(py, &obs)?;
+        let result = policy_fn.call1(py, (py_array,))?;
+        let (probs_obj, value): (PyObject, f32) = result.extract(py)?;
+        let probs_any = probs_obj.bind(py);
+        let policy_probs = LightZeroMCTS::extract_policy_probs(py, &probs_any, self.board_size)?;
+
+        {
+            let node = &mut self.nodes[node_idx];
+            node.raw_value = value;
+            node.q_value = value;
+        }
+
+        let valid_actions = env.get_valid_actions();
+        let mut policy_sum = 0.0;
+        let mut child_specs = Vec::with_capacity(valid_actions.len());
+
+        for action in valid_actions {
+            let p = policy_probs[action];
+            child_specs.push((action, p));
+            policy_sum += p;
+        }
+
+        if policy_sum > 0.0 {
+            for (_, prob) in child_specs.iter_mut() {
+                *prob /= policy_sum;
+            }
+        } else if !child_specs.is_empty() {
+            let uniform = 1.0 / child_specs.len() as f32;
+            for (_, prob) in child_specs.iter_mut() {
+                *prob = uniform;
+            }
+        }
+
+        let mut resolved_children = Vec::with_capacity(child_specs.len());
+        for (action, prob) in child_specs {
+            let mut next_env = env.clone();
+            next_env.step(action);
+            let child_hash = next_env.board.clone();
+            let child_idx = if let Some(&idx) = self.transposition_table.get(&child_hash) {
+                idx
+            } else {
+                let idx = self.new_node(0.0);
+                self.transposition_table.insert(child_hash, idx);
+                idx
+            };
+            resolved_children.push((action, child_idx, prob));
+        }
+
+        {
+            let node = &mut self.nodes[node_idx];
+            for (action, child_idx, prob) in resolved_children {
+                node.children.insert(
+                    action,
+                    McgsEdge {
+                        child: child_idx,
+                        visits: 0,
+                        prior_prob: prob,
+                    },
+                );
+            }
+        }
+
+        Ok(value)
+    }
+
+    fn backpropagate(&mut self, search_path: &[(usize, usize)]) {
+        for (parent_idx, action) in search_path.iter().rev() {
+            if let Some(edge) = self.nodes[*parent_idx].children.get_mut(action) {
+                edge.visits += 1;
+            }
+            self.nodes[*parent_idx].visit_count += 1;
+            self.recompute_q(*parent_idx);
+        }
+    }
+
+    fn recompute_q(&mut self, node_idx: usize) {
+        let (raw_value, edges): (f32, Vec<(usize, u32)>) = {
+            let node = &self.nodes[node_idx];
+            (
+                node.raw_value,
+                node.children
+                    .values()
+                    .map(|edge| (edge.child, edge.visits))
+                    .collect(),
+            )
+        };
+
+        let mut total_visits = 0u32;
+        let mut weighted_sum = 0.0f32;
+        for (child_idx, visits) in edges {
+            if visits > 0 {
+                total_visits += visits;
+                weighted_sum += visits as f32 * (-self.nodes[child_idx].q_value);
+            }
+        }
+
+        let q_value = (raw_value + weighted_sum) / (1.0 + total_visits as f32);
+        self.nodes[node_idx].q_value = q_value;
+    }
+
+    fn add_dirichlet_noise(&mut self, node_idx: usize) {
+        let count = self.nodes[node_idx].children.len();
+        if count == 0 {
+            return;
+        }
+        let noise = LightZeroMCTS::sample_dirichlet(self.dirichlet_alpha, count);
+        let epsilon = self.dirichlet_epsilon;
+
+        let action_edges: Vec<(usize, f32)> = self.nodes[node_idx]
+            .children
+            .iter()
+            .map(|(&action, edge)| (action, edge.prior_prob))
+            .collect();
+
+        for (i, (action, prior_prob)) in action_edges.iter().enumerate() {
+            if let Some(edge) = self.nodes[node_idx].children.get_mut(action) {
+                edge.prior_prob = (1.0 - epsilon) * (*prior_prob) + epsilon * noise[i];
+            }
+        }
+    }
+
+    fn empty_pi(&self) -> PyResult<(usize, Py<PyArray1<f32>>)> {
+        Python::with_gil(|py| {
+            let pi = PyArray1::zeros(py, self.board_size * self.board_size, false);
+            Ok((0, pi.into()))
+        })
+    }
+}
+
 #[pymodule]
 fn zero_mcts_rs(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<LightZeroMCTS>()?;
+    m.add_class::<ZeroMCGS>()?;
     Ok(())
 }

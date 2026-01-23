@@ -1,18 +1,69 @@
 # %%
+from dataclasses import dataclass
+from typing import Any
+from importlib import import_module
+
 from gomoku.mcts import MCTS
-from gomoku.zero_mcts import ZeroMCTS
 from gomoku.light_zero_mcts import LightZeroMCTS
+from gomoku.utils import timer
 from gomoku.gomoku_env import GomokuEnv
 from gomoku.policy import ZeroPolicy
-from gomoku.utils import timer
 import argparse
+import inspect
 import random
 import torch
 import os
 import ray
-import importlib
 import numpy as np
 # %%
+
+
+@dataclass(frozen=True)
+class MCTSConfig:
+    mcts_class: type | str | None = None
+    eval_batch_size: int = 1
+    virtual_loss: float = 1.0
+    max_children: int = 0
+
+
+def resolve_mcts_class(mcts_class: type | str | None) -> type:
+    if mcts_class is None:
+        return LightZeroMCTS
+    if isinstance(mcts_class, str):
+        module_name, class_name = mcts_class.rsplit(".", 1)
+        module = import_module(module_name)
+        return getattr(module, class_name)
+    return mcts_class
+
+
+def is_rs_mcts_class(mcts_class: type | str | None) -> bool:
+    if mcts_class is None:
+        return False
+    if isinstance(mcts_class, str):
+        return mcts_class.startswith("zero_mcts_rs")
+    if mcts_class.__module__.startswith("zero_mcts_rs"):
+        return True
+    # Pybind classes may report as builtins; fall back to known class names.
+    if mcts_class.__module__ == "builtins":
+        return mcts_class.__name__ in {"ZeroMCGS", "LightZeroMCTS"}
+    return False
+
+
+@dataclass(frozen=True)
+class SelfPlaySettings:
+    board_size: int
+    itermax: int = 200
+    eager: bool = False
+    temperature_moves: int = 30
+    use_dirichlet: bool = True
+    forbidden_first_action: int | None = None
+    share_mcts: bool = True
+
+
+@dataclass(frozen=True)
+class PolicyRuntime:
+    policy_runner: Any | None = None
+    policy_server: Any | None = None
 
 
 class Player:
@@ -100,7 +151,21 @@ class RandomPlayer(Player):
         return action
 
 
-def make_policy_fn(policy: ZeroPolicy, device: str):
+def make_policy_fn(
+    policy: ZeroPolicy,
+    device: str,
+    policy_server=None,
+):
+    if policy_server is not None:
+
+        def policy_fn(obs: np.ndarray):
+            logits_np, value_np = ray.get(policy_server.predict.remote(obs))
+            probs = logits_np.squeeze(0)
+            value = float(value_np.reshape(-1)[0])
+            return probs, value
+
+        return policy_fn
+
     policy.eval()
 
     def policy_fn(obs: np.ndarray):
@@ -113,74 +178,107 @@ def make_policy_fn(policy: ZeroPolicy, device: str):
     return policy_fn
 
 
+@timer
+def run_self_play(
+    policy,
+    device,
+    settings: SelfPlaySettings,
+    mcts_config: MCTSConfig,
+    runtime: PolicyRuntime,
+):
+    player1 = ZeroMCTSPlayer(policy, device=device)
+    player2 = ZeroMCTSPlayer(policy, device=device)
+
+    env = GomokuEnv(settings.board_size)
+    mcts_class = resolve_mcts_class(mcts_config.mcts_class)
+    winner, infos = _play_one_game(
+        player1,
+        player2,
+        env,
+        settings=settings,
+        mcts_config=mcts_config,
+        runtime=runtime,
+        MCTS=mcts_class,
+    )
+    print(f"Game over! Winner: {winner}")
+    return [infos]
+
+
 def self_play(
     policy,
     device,
     board_size,
     itermax=200,
-    use_rs_mcts: bool = False,
-    branch_ratio: float = 0.2,
+    temperature_moves: int = 30,
+    branch_ratio: float = 0.0,
+    share_mcts: bool = True,
+    policy_runner=None,
+    policy_server=None,
+    mcts_eval_batch_size: int = 1,
+    mcts_virtual_loss: float = 1.0,
+    mcts_max_children: int = 0,
+    mcts_class: type | None = None,
 ):
-    player1 = ZeroMCTSPlayer(policy, device=device)
-    player2 = ZeroMCTSPlayer(policy, device=device)
-
-    env = GomokuEnv(board_size)
-
-    winner, infos = play_one_game(
-        player1,
-        player2,
+    settings = SelfPlaySettings(
         board_size=board_size,
-        game=env,
         itermax=itermax,
-        eager=False,
-        use_rs_mcts=use_rs_mcts,
+        temperature_moves=temperature_moves,
+        share_mcts=share_mcts,
     )
-    games = [infos]
+    mcts_config = MCTSConfig(
+        mcts_class=mcts_class,
+        eval_batch_size=mcts_eval_batch_size,
+        virtual_loss=mcts_virtual_loss,
+        max_children=mcts_max_children,
+    )
+    runtime = PolicyRuntime(
+        policy_runner=policy_runner,
+        policy_server=policy_server,
+    )
 
-    if (
-        branch_ratio > 0
-        and infos.get("actions")
-        and random.random() < branch_ratio
-        and len(infos["actions"]) > 3
-    ):
-        start_idx = random.randint(1, len(infos["actions"]) - 2)
-        branch_env = GomokuEnv(board_size)
-        for action in infos["actions"][:start_idx]:
-            branch_env.step(action)
-            if branch_env.done:
-                break
-        if not branch_env.done:
-            branch_winner, branch_infos = play_one_game(
-                player1,
-                player2,
-                board_size=board_size,
-                game=branch_env,
-                itermax=itermax,
-                eager=False,
-                use_rs_mcts=use_rs_mcts,
-                forbidden_first_action=infos["actions"][start_idx],
-            )
-            games.append(branch_infos)
-            print(f"Branch game over! Winner: {branch_winner}")
+    games = run_self_play(policy, device, settings, mcts_config, runtime)
+    infos = games[0]
 
-    print(f"Game over! Winner: {winner}")
+    # if (
+    #     branch_ratio > 1
+    #     and infos.get("actions")
+    #     and random.random() < branch_ratio
+    #     and len(infos["actions"]) > 4
+    # ):
+    #     start_idx = random.randint(2, len(infos["actions"]) - 2)
+    #     branch_env = GomokuEnv(board_size)
+    #     for action in infos["actions"][:start_idx]:
+    #         branch_env.step(action)
+    #         if branch_env.done:
+    #             break
+    #     if not branch_env.done:
+    #         branch_winner, branch_infos = play_one_game(
+    #             player2,
+    #             player3,
+    #             board_size=board_size,
+    #             game=branch_env,
+    #                 itermax=itermax,
+    #                 eager=False,
+    #                 use_rs_mcts=use_rs_mcts,
+    #                 forbidden_first_action=infos["actions"][start_idx],
+    #                 share_mcts=share_mcts,
+    #                 policy_runner=policy_runner,
+    #             )
+    #         games.append(branch_infos)
+    #     print(f"Branch game over! Winner: {branch_winner}")
+
     return games
 
 
-@timer
-def play_one_game(
+def _play_one_game(
     player1,
     player2,
-    board_size: int,
-    game: GomokuEnv = None,
-    render=False,
-    itermax=200,
-    eager=False,
+    env: GomokuEnv,
+    settings: SelfPlaySettings,
+    mcts_config: MCTSConfig,
+    runtime: PolicyRuntime,
     MCTS=LightZeroMCTS,
-    use_rs_mcts: bool = False,
-    temperature_moves: int = 8,
-    use_dirichlet: bool = True,
-    forbidden_first_action: int | None = None,
+    render=False,
 ):
     states = []
     probs = []
@@ -188,45 +286,79 @@ def play_one_game(
     actions = []
     players_turns = []
 
-    if game is None:
-        env = GomokuEnv(board_size)
-    else:
-        env = game
+    shared_policy = player1.policy is player2.policy
+    share_mcts = bool(settings.share_mcts and shared_policy)
 
-    if use_rs_mcts:
-        zero_mcts_rs = importlib.import_module("zero_mcts_rs")
-        if not hasattr(zero_mcts_rs, "LightZeroMCTS"):
-            raise RuntimeError(
-                "zero_mcts_rs module loaded, but LightZeroMCTS is missing. "
-                "Run maturin develop in zero_mcts_rs first."
+    if is_rs_mcts_class(MCTS):
+        rs_kwargs = {}
+        if mcts_config.max_children > 0:
+            rs_kwargs["max_children"] = mcts_config.max_children
+        if share_mcts:
+            policy_fn1 = make_policy_fn(
+                player1.policy,
+                player1.device,
+                policy_server=runtime.policy_server,
             )
-        policy_fn1 = make_policy_fn(player1.policy, player1.device)
-        policy_fn2 = make_policy_fn(player2.policy, player2.device)
-        mcts1 = zero_mcts_rs.LightZeroMCTS(
-            board_size=board_size,
-            puct=2.0,
-            dirichlet_alpha=0.3,
-            dirichlet_epsilon=0.15,
-        )
-        mcts2 = zero_mcts_rs.LightZeroMCTS(
-            board_size=board_size,
-            puct=2.0,
-            dirichlet_alpha=0.3,
-            dirichlet_epsilon=0.15,
-        )
+            policy_fn2 = policy_fn1
+            mcts1 = MCTS(
+                board_size=settings.board_size,
+                puct=2.0,
+                dirichlet_alpha=0.3,
+                dirichlet_epsilon=0.25,
+                **rs_kwargs,
+            )
+            mcts2 = mcts1
+        else:
+            policy_fn1 = make_policy_fn(
+                player1.policy,
+                player1.device,
+                policy_server=runtime.policy_server,
+            )
+            policy_fn2 = make_policy_fn(
+                player2.policy,
+                player2.device,
+                policy_server=runtime.policy_server,
+            )
+            mcts1 = MCTS(
+                board_size=settings.board_size,
+                puct=2.0,
+                dirichlet_alpha=0.3,
+                dirichlet_epsilon=0.25,
+                **rs_kwargs,
+            )
+            mcts2 = MCTS(
+                board_size=settings.board_size,
+                puct=2.0,
+                dirichlet_alpha=0.3,
+                dirichlet_epsilon=0.25,
+                **rs_kwargs,
+            )
     else:
-        mcts1 = MCTS(player1.policy, device=player1.device)
-        mcts2 = MCTS(player2.policy, device=player2.device)
+        mcts_kwargs = {"policy_runner": runtime.policy_runner}
+        params = inspect.signature(MCTS.__init__).parameters
+        if "eval_batch_size" in params:
+            mcts_kwargs["eval_batch_size"] = mcts_config.eval_batch_size
+        if "virtual_loss" in params:
+            mcts_kwargs["virtual_loss"] = mcts_config.virtual_loss
+        if "max_children" in params:
+            mcts_kwargs["max_children"] = mcts_config.max_children
+
+        mcts1 = MCTS(player1.policy, device=player1.device, **mcts_kwargs)
+        mcts2 = (
+            mcts1
+            if share_mcts
+            else MCTS(player2.policy, device=player2.device, **mcts_kwargs)
+        )
 
     forbidden_used = False
 
     while not env._is_terminal():
         current_player = env.current_player
         forbidden_actions = None
-        if not forbidden_used and forbidden_first_action is not None:
-            forbidden_actions = [forbidden_first_action]
+        if not forbidden_used and settings.forbidden_first_action is not None:
+            forbidden_actions = [settings.forbidden_first_action]
 
-        if use_rs_mcts:
+        if is_rs_mcts_class(MCTS):
             current_state = env._get_observation()
             board_flat = env.board.astype(np.int8).reshape(-1)
             if current_player == 1:
@@ -234,35 +366,55 @@ def play_one_game(
                     board_flat,
                     env.current_player,
                     policy_fn1,
-                    iterations=itermax,
-                    use_dirichlet=use_dirichlet,
+                    iterations=settings.itermax,
+                    use_dirichlet=settings.use_dirichlet,
                     move_size=env.move_size,
                     last_action=env.last_action,
                 )
                 num_moves = env.move_size
                 temperature = (
-                    0.0 if eager else (1.0 if num_moves < temperature_moves else 0.0)
+                    0.0
+                    if settings.eager
+                    else (1.0 if num_moves < settings.temperature_moves else 0.0)
                 )
                 action, probs_for_training = mcts1.select_action_with_temperature(
-                    temperature, None, forbidden_actions
+                    temperature
                 )
+                if forbidden_actions and action in forbidden_actions:
+                    valid_actions = [
+                        a
+                        for a in env.get_valid_actions()
+                        if a not in forbidden_actions
+                    ]
+                    if valid_actions:
+                        action = random.choice(valid_actions)
             else:
                 mcts2.run(
                     board_flat,
                     env.current_player,
                     policy_fn2,
-                    iterations=itermax,
-                    use_dirichlet=use_dirichlet,
+                    iterations=settings.itermax,
+                    use_dirichlet=settings.use_dirichlet,
                     move_size=env.move_size,
                     last_action=env.last_action,
                 )
                 num_moves = env.move_size
                 temperature = (
-                    0.0 if eager else (1.0 if num_moves < temperature_moves else 0.0)
+                    0.0
+                    if settings.eager
+                    else (1.0 if num_moves < settings.temperature_moves else 0.0)
                 )
                 action, probs_for_training = mcts2.select_action_with_temperature(
-                    temperature, None, forbidden_actions
+                    temperature
                 )
+                if forbidden_actions and action in forbidden_actions:
+                    valid_actions = [
+                        a
+                        for a in env.get_valid_actions()
+                        if a not in forbidden_actions
+                    ]
+                    if valid_actions:
+                        action = random.choice(valid_actions)
         else:
             player = player1 if current_player == 1 else player2
             mcts = mcts1 if current_player == 1 else mcts2
@@ -270,9 +422,9 @@ def play_one_game(
                 env,
                 **{
                     "mcts": mcts,
-                    "itermax": itermax,
-                    "eager": eager,
-                    "temperature_moves": temperature_moves,
+                    "itermax": settings.itermax,
+                    "eager": settings.eager,
+                    "temperature_moves": settings.temperature_moves,
                     "forbidden_actions": forbidden_actions,
                 },
             )
@@ -289,11 +441,21 @@ def play_one_game(
         players_turns.append(current_player)
 
         env.step(action)
-        mcts1.step(action)
-        mcts2.step(action)
+        if share_mcts:
+            mcts1.step(action)
+        else:
+            mcts1.step(action)
+            mcts2.step(action)
         if render:
             env.render()
 
+    if hasattr(mcts1, "debug_stats"):
+        stats = mcts1.debug_stats()
+        print(
+            "MCTS stats: nodes={nodes} children={children} avg_children={avg_children:.1f}".format(
+                **stats
+            )
+        )
     winner = env.winner
     for i, current_player in enumerate(players_turns):
         if current_player == winner:
@@ -312,122 +474,177 @@ def play_one_game(
     }
 
 
-@ray.remote
-class ArenaWorker:
-    def __init__(
-        self,
-        player1_model: ZeroPolicy,
-        player2_model: ZeroPolicy,
-        board_size: int,
-        itermax: int = 200,
-        eager: bool = False,
-    ):
-        # 在 Actor 创建时，一次性初始化 Player 对象
-        # 这个包含了神经网络的反序列化过程，只会在 Actor 启动时发生一次！
-        self.player1 = ZeroMCTSPlayer(player1_model)
-        self.player2 = ZeroMCTSPlayer(player2_model)
-        self.board_size = board_size
-        self.itermax = itermax
-        self.eager = eager
+# @timer
+# def play_one_game(
+#     player1,
+#     player2,
+#     board_size: int,
+#     game: GomokuEnv = None,
+#     render=False,
+#     itermax=200,
+#     eager=False,
+#     MCTS=LightZeroMCTS,
+#     use_rs_mcts: bool = False,
+#     temperature_moves: int = 30,
+#     use_dirichlet: bool = True,
+#     forbidden_first_action: int | None = None,
+#     share_mcts: bool = True,
+#     policy_runner=None,
+#     policy_server=None,
+#     mcts_eval_batch_size: int = 1,
+#     mcts_virtual_loss: float = 1.0,
+#     mcts_max_children: int = 0,
+# ):
+#     settings = SelfPlaySettings(
+#         board_size=board_size,
+#         itermax=itermax,
+#         eager=eager,
+#         temperature_moves=temperature_moves,
+#         use_dirichlet=use_dirichlet,
+#         forbidden_first_action=forbidden_first_action,
+#         share_mcts=share_mcts,
+#     )
+#     mcts_config = MCTSConfig(
+#         use_rs_mcts=use_rs_mcts,
+#         use_mcgs=use_m
+#         eval_batch_size=mcts_eval_batch_size,
+#         virtual_loss=mcts_virtual_loss,
+#         max_children=mcts_max_children,
+#     )
+#     runtime = PolicyRuntime(
+#         policy_runner=policy_runner,
+#         policy_server=policy_server,
+#     )
 
-    def run_game(self, player1_starts: bool):
-        if player1_starts:
-            first_player, second_player = self.player1, self.player2
-        else:
-            first_player, second_player = self.player2, self.player1
-
-        s = play_one_game(
-            first_player,
-            second_player,
-            board_size=self.board_size,
-            itermax=self.itermax,
-            eager=self.eager,
-        )
-        return s
+#     env = game or GomokuEnv(board_size)
+#     return _play_one_game(
+#         player1,
+#         player2,
+#         env,
+#         settings=settings,
+#         mcts_config=mcts_config,
+#         runtime=runtime,
+#         MCTS=MCTS,
+#         render=render,
+#     )
 
 
-@timer
-def arena_parallel(
-    policy1,
-    policy2,
-    board_size,
-    num_cpus,
-    games=100,
-    eager=False,
-    itermax=200,
-    MCTS=ZeroMCTS,
-):
-    # 初始化 Ray
-    if not ray.is_initialized():
-        ray.init(num_cpus=num_cpus)
+# @ray.remote
+# class ArenaWorker:
+#     def __init__(
+#         self,
+#         player1_model: ZeroPolicy,
+#         player2_model: ZeroPolicy,
+#         board_size: int,
+#         itermax: int = 200,
+#         eager: bool = False,
+#     ):
+#         # 在 Actor 创建时，一次性初始化 Player 对象
+#         # 这个包含了神经网络的反序列化过程，只会在 Actor 启动时发生一次！
+#         self.player1 = ZeroMCTSPlayer(player1_model)
+#         self.player2 = ZeroMCTSPlayer(player2_model)
+#         self.board_size = board_size
+#         self.itermax = itermax
+#         self.eager = eager
 
-    print(f"Starting parallel arena with {games} games on {num_cpus} CPUs...")
-    p1_ref = ray.put(policy1)
-    p2_ref = ray.put(policy2)
+#     def run_game(self, player1_starts: bool):
+#         if player1_starts:
+#             first_player, second_player = self.player1, self.player2
+#         else:
+#             first_player, second_player = self.player2, self.player1
 
-    actor_pool = [
-        ArenaWorker.remote(
-            p1_ref, p2_ref, board_size=board_size, eager=eager, itermax=itermax
-        )
-        for _ in range(num_cpus)
-    ]
-    pool_size = len(actor_pool)
+#         s = play_one_game(
+#             first_player,
+#             second_player,
+#             board_size=self.board_size,
+#             itermax=self.itermax,
+#             eager=self.eager,
+#         )
+#         return s
 
-    task_refs = []
-    player1_turn_flags = []
 
-    for i in range(games):
-        player1_starts = random.choice([True, False])
-        player1_turn_flags.append(player1_starts)
+# @timer
+# def arena_parallel(
+#     policy1,
+#     policy2,
+#     board_size,
+#     num_cpus,
+#     games=100,
+#     eager=False,
+#     itermax=200,
+#     MCTS=ZeroMCTS,
+# ):
+#     # 初始化 Ray
+#     if not ray.is_initialized():
+#         ray.init(num_cpus=num_cpus)
 
-        actor = actor_pool[i % pool_size]
+#     print(f"Starting parallel arena with {games} games on {num_cpus} CPUs...")
+#     p1_ref = ray.put(policy1)
+#     p2_ref = ray.put(policy2)
 
-        task = actor.run_game.remote(player1_starts)
-        task_refs.append(task)
+#     actor_pool = [
+#         ArenaWorker.remote(
+#             p1_ref, p2_ref, board_size=board_size, eager=eager, itermax=itermax
+#         )
+#         for _ in range(num_cpus)
+#     ]
+#     pool_size = len(actor_pool)
 
-    results = ray.get(task_refs)
+#     task_refs = []
+#     player1_turn_flags = []
 
-    # 提取所有获胜者编号 (1=先手胜, 2=后手胜, 0=平局)
-    raw_winners = [res[0] for res in results]
+#     for i in range(games):
+#         player1_starts = random.choice([True, False])
+#         player1_turn_flags.append(player1_starts)
 
-    # 统计结果
-    player1_wins = 0
-    player2_wins = 0
-    draws = 0
+#         actor = actor_pool[i % pool_size]
 
-    for i in range(games):
-        winner = raw_winners[i]
-        is_p1_turn = player1_turn_flags[i]
+#         task = actor.run_game.remote(player1_starts)
+#         task_refs.append(task)
 
-        if winner == 0 or winner is None:  # 平局或无胜者
-            draws += 1
-        elif winner == 1:  # 先手获胜
-            if is_p1_turn:
-                player1_wins += 1
-            else:
-                player2_wins += 1
-        elif winner == 2:  # 后手获胜
-            if is_p1_turn:
-                player2_wins += 1
-            else:
-                player1_wins += 1
+#     results = ray.get(task_refs)
 
-    assert player1_wins + player2_wins + draws == games
+#     # 提取所有获胜者编号 (1=先手胜, 2=后手胜, 0=平局)
+#     raw_winners = [res[0] for res in results]
 
-    player1_win_rate = player1_wins / games
-    player2_win_rate = player2_wins / games
-    draw_rate = draws / games
+#     # 统计结果
+#     player1_wins = 0
+#     player2_wins = 0
+#     draws = 0
 
-    print("Arena finished!")
-    print(f"Player 1 wins: {player1_wins} ({player1_win_rate:.2%})")
-    print(f"Player 2 wins: {player2_wins} ({player2_win_rate:.2%})")
-    print(f"Draws: {draws} ({draw_rate:.2%})")
+#     for i in range(games):
+#         winner = raw_winners[i]
+#         is_p1_turn = player1_turn_flags[i]
 
-    return {
-        "player1_win_rate": player1_win_rate,
-        "player2_win_rate": player2_win_rate,
-        "draw_rate": draw_rate,
-    }
+#         if winner == 0 or winner is None:  # 平局或无胜者
+#             draws += 1
+#         elif winner == 1:  # 先手获胜
+#             if is_p1_turn:
+#                 player1_wins += 1
+#             else:
+#                 player2_wins += 1
+#         elif winner == 2:  # 后手获胜
+#             if is_p1_turn:
+#                 player2_wins += 1
+#             else:
+#                 player1_wins += 1
+
+#     assert player1_wins + player2_wins + draws == games
+
+#     player1_win_rate = player1_wins / games
+#     player2_win_rate = player2_wins / games
+#     draw_rate = draws / games
+
+#     print("Arena finished!")
+#     print(f"Player 1 wins: {player1_wins} ({player1_win_rate:.2%})")
+#     print(f"Player 2 wins: {player2_wins} ({player2_win_rate:.2%})")
+#     print(f"Draws: {draws} ({draw_rate:.2%})")
+
+#     return {
+#         "player1_win_rate": player1_win_rate,
+#         "player2_win_rate": player2_win_rate,
+#         "draw_rate": draw_rate,
+#     }
 
 
 # %%

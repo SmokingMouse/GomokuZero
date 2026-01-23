@@ -83,7 +83,7 @@ class TreeNode:
         所以需要取反。
         """
         self.visits += 1
-        self.value_sum -= value_from_child_perspective
+        self.value_sum -= float(value_from_child_perspective)
 
     @property
     def q_value(self):

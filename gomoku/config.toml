@@ -1,0 +1,72 @@
+[app]
+board_size = 9
+model_path = "models/gomoku_zero_9_lab_5/policy_step_990000.pth"
+mcts_iterations = 1200
+mcts_puct = 2.0
+max_workers = 2
+cors_origins = ["*"]
+
+[gui]
+board_size = 15
+square_size = 40
+margin = 40
+model_path = "models/gomoku_zero_9_lab_4/policy_step_100000.pth"
+
+[trainer]
+self_play_device = "cpu"
+use_batch_inference = false
+use_shared_policy_server = true
+policy_server_device = ""
+policy_server_concurrency = 64
+mcts_eval_batch_size = 4
+mcts_virtual_loss = 1.0
+mcts_max_children = 0
+batch_infer_size = 128
+batch_infer_wait_ms = 4.0
+batch_infer_queue = 4096
+batch_infer_enqueue_ms = 1000.0
+batch_infer_stats_sec = 1.0
+board_size = 15
+lr = 5e-4
+save_per_steps = 10000
+cpus = 16
+device = "cuda"
+seed = 42
+mcts_class = "zero_mcts_rs.ZeroMCGS"
+temperature_moves = 30
+
+[trainer.profiles."9"]
+steps = 1000000
+buffer_size = 60000
+self_play_per_steps = 250
+self_play_num = 32
+eval_steps = 100000
+num_workers = 16
+games_per_worker = 2
+alpha = 1
+itermax = 200
+validation_eval_step = 5000
+validation_top_k = 5
+validation_path = "gomoku/validation_sets/validation_set.jsonl"
+lab_name = "gomoku_zero_9_lab_5"
+comment = "mcgs"
+batch_size = 256
+threshold = 0.2
+
+[trainer.profiles."15"]
+steps = 1000000
+buffer_size = 120000
+self_play_per_steps = 250
+self_play_num = 32
+eval_steps = 1000000
+num_workers = 16
+games_per_worker = 2
+alpha = 1
+itermax = 200
+validation_eval_step = 5000
+validation_top_k = 5
+validation_path = "gomoku/validation_sets/validation_set_15.jsonl"
+lab_name = "gomoku_zero_15_lab_3"
+comment = "mcgs"
+batch_size = 256
+threshold = 0.2

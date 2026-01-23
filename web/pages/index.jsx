@@ -27,6 +27,7 @@ const DEFAULT_API =
   deriveApiUrl(DEFAULT_WS) ||
   "http://localhost:8000";
 
+const DEFAULT_BOARD_SIZE = Number(process.env.NEXT_PUBLIC_BOARD_SIZE || 15);
 const makeEmptyBoard = (size) =>
   Array.from({ length: size }, () => Array.from({ length: size }, () => 0));
 
@@ -59,7 +60,7 @@ export default function Home() {
   const [connected, setConnected] = useState(false);
   const [matchMode, setMatchMode] = useState("human");
   const [humanPlayer, setHumanPlayer] = useState(2);
-  const [board, setBoard] = useState(() => makeEmptyBoard(9));
+  const [board, setBoard] = useState(() => makeEmptyBoard(DEFAULT_BOARD_SIZE));
   const [currentPlayer, setCurrentPlayer] = useState(1);
   const [winner, setWinner] = useState(0);
   const [done, setDone] = useState(false);
@@ -69,7 +70,9 @@ export default function Home() {
   const [aiDelayMs, setAiDelayMs] = useState(200);
   const [aiPaused, setAiPaused] = useState(false);
   const [usePreset, setUsePreset] = useState(false);
-  const [editorBoard, setEditorBoard] = useState(() => makeEmptyBoard(9));
+  const [editorBoard, setEditorBoard] = useState(() =>
+    makeEmptyBoard(DEFAULT_BOARD_SIZE)
+  );
   const [editorMode, setEditorMode] = useState("auto");
   const [editorBestActions, setEditorBestActions] = useState(() => new Set());
   const [editorHistory, setEditorHistory] = useState([]);
@@ -578,7 +581,7 @@ export default function Home() {
       }
       const board = Array.isArray(data.state)
         ? data.state
-        : data.state?.board || makeEmptyBoard(9);
+        : data.state?.board || makeEmptyBoard(DEFAULT_BOARD_SIZE);
       const bestActions = new Set(data.best_action || []);
       setEditorBoard(board);
       setEditorBestActions(bestActions);
@@ -618,7 +621,7 @@ export default function Home() {
               Gomoku Zero Arena
             </p>
             <h1 className="mt-3 text-3xl font-semibold text-ink">
-              Challenge the 9x9 AI
+              Challenge the {boardSize}x{boardSize} AI
             </h1>
             <p className="mt-3 text-sm text-slate-700">
               Connect to your FastAPI server and play against the latest ZeroMCTS
@@ -812,7 +815,10 @@ export default function Home() {
           <div
             className="rounded-[24px] bg-white/70 p-4 sm:p-5 md:p-6 shadow-lg shadow-black/5"
             style={{
-              width: "clamp(250px, 76vw, 320px)",
+              width: `clamp(250px, 76vw, ${Math.max(
+                320,
+                boardSize * 24
+              )}px)`,
               margin: "0 auto"
             }}
           >
@@ -917,7 +923,12 @@ export default function Home() {
 
             <div
               className="mt-4 rounded-[20px] bg-white/70 p-3 shadow-inner"
-              style={{ width: "clamp(220px, 70vw, 300px)" }}
+              style={{
+                width: `clamp(220px, 70vw, ${Math.max(
+                  300,
+                  editorBoard.length * 22
+                )}px)`
+              }}
             >
               <div
                 className="board-surface grid gap-0 rounded-[14px] select-none"
